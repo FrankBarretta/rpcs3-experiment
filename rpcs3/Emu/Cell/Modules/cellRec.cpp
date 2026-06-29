@@ -403,7 +403,7 @@ void rec_info::set_video_params(s32 video_format)
 		break;
 	}
 
-	const bool wide = g_cfg.video.aspect_ratio == video_aspect::_16_9;
+	const bool wide = g_cfg.video.aspect_ratio != video_aspect::_4_3;
 	bool hd = true;
 
 	switch(g_cfg.video.resolution)

@@ -38,6 +38,7 @@ void GLVertexDecompilerThread::insertHeader(std::stringstream& OS)
 		"	float point_size;\n"
 		"	float z_near;\n"
 		"	float z_far;\n"
+		"	float ultrawide_x_scale;\n"
 		"};\n"
 		"#define get_user_clip_config() user_clip_configuration_bits\n"
 		"\n\n"
@@ -282,6 +283,7 @@ void GLVertexDecompilerThread::insertMainEnd(std::stringstream& OS)
 	}
 
 	OS << "	gl_Position = gl_Position * scale_offset_mat;\n";
+	OS << "	gl_Position.x *= ultrawide_x_scale;\n";
 	OS << "	gl_Position = apply_zclip_xform(gl_Position, z_near, z_far);\n";
 
 	// Since our clip_space is symmetrical [-1, 1] we map it to linear space using the eqn:

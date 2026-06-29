@@ -19,7 +19,8 @@ struct vertex_context_t
 	float point_size;
 	float z_near;
 	float z_far;
-	float reserved[3];
+	float ultrawide_x_scale;
+	float reserved[2];
 };
 
 struct draw_parameters_t

@@ -628,7 +628,7 @@ namespace rpcs3::utils
 		}
 		case game_content_type::overlay_picture:
 		{
-			const bool high_res = g_cfg.video.aspect_ratio == video_aspect::_16_9;
+			const bool high_res = g_cfg.video.aspect_ratio != video_aspect::_4_3;
 			return find_content(high_res ? "PIC0" : "PIC2", "PNG");
 		}
 		case game_content_type::background_picture:

@@ -600,6 +600,7 @@ void main()
 	write_output(14, 21);
 
 	vec4 pos = dest[0] * scale_offset_mat;
+	pos.x *= ultrawide_x_scale;
 
 #ifdef Z_NEGATIVE_ONE_TO_ONE
 	pos.z = (pos.z + pos.z) - pos.w;

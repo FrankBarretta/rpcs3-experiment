@@ -623,6 +623,88 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->stretchToDisplayArea, emu_settings_type::StretchToDisplayArea);
 	SubscribeTooltip(ui->stretchToDisplayArea, tooltips.settings.stretch_to_display_area);
 
+	m_emu_settings->EnhanceCheckBox(ui->ultraWideScreen, emu_settings_type::UltraWideScreen);
+	SubscribeTooltip(ui->ultraWideScreen, tooltips.settings.ultra_wide_screen);
+
+	const auto is_ultra_wide_aspect = [](int value)
+	{
+		const video_aspect aspect = static_cast<video_aspect>(value);
+		return aspect == video_aspect::_21_9 || aspect == video_aspect::_32_9 || aspect == video_aspect::_48_9;
+	};
+
+	const auto set_aspect_ratio = [this](video_aspect aspect)
+	{
+		if (const int index = find_item(ui->aspectBox, static_cast<int>(aspect)); index >= 0)
+		{
+			ui->aspectBox->setCurrentIndex(index);
+		}
+	};
+
+	const auto aspect_is_ultra_wide = [this, is_ultra_wide_aspect]()
+	{
+		const auto [text, value] = get_data(ui->aspectBox, ui->aspectBox->currentIndex());
+		return is_ultra_wide_aspect(value);
+	};
+
+	if (ui->ultraWideScreen->isChecked() && !aspect_is_ultra_wide())
+	{
+		set_aspect_ratio(video_aspect::_32_9);
+	}
+	else
+	{
+		ui->ultraWideScreen->setChecked(aspect_is_ultra_wide());
+	}
+
+	connect(ui->aspectBox, &QComboBox::currentIndexChanged, this, [this, is_ultra_wide_aspect](int index)
+	{
+		if (index < 0)
+		{
+			return;
+		}
+
+		const auto [text, value] = get_data(ui->aspectBox, index);
+		const bool ultra_wide = is_ultra_wide_aspect(value);
+		ui->ultraWideScreen->setChecked(ultra_wide);
+
+		if (ultra_wide)
+		{
+			ui->stretchToDisplayArea->setChecked(false);
+		}
+	});
+
+	connect(ui->ultraWideScreen, &QCheckBox::toggled, this, [this](bool checked)
+	{
+		if (checked)
+		{
+			ui->stretchToDisplayArea->setChecked(false);
+			if (const auto [text, value] = get_data(ui->aspectBox, ui->aspectBox->currentIndex()); static_cast<video_aspect>(value) != video_aspect::_21_9 &&
+			    static_cast<video_aspect>(value) != video_aspect::_32_9 &&
+			    static_cast<video_aspect>(value) != video_aspect::_48_9)
+			{
+				if (const int index = find_item(ui->aspectBox, static_cast<int>(video_aspect::_32_9)); index >= 0)
+				{
+					ui->aspectBox->setCurrentIndex(index);
+				}
+			}
+		}
+		else if (const auto [text, value] = get_data(ui->aspectBox, ui->aspectBox->currentIndex()); static_cast<video_aspect>(value) == video_aspect::_21_9 ||
+		         static_cast<video_aspect>(value) == video_aspect::_32_9 ||
+		         static_cast<video_aspect>(value) == video_aspect::_48_9)
+		{
+			if (const int index = find_item(ui->aspectBox, static_cast<int>(video_aspect::_16_9)); index >= 0)
+			{
+				ui->aspectBox->setCurrentIndex(index);
+			}
+		}
+	});
+	connect(ui->stretchToDisplayArea, &QCheckBox::toggled, this, [this](bool checked)
+	{
+		if (checked)
+		{
+			ui->ultraWideScreen->setChecked(false);
+		}
+	});
+
 	m_emu_settings->EnhanceCheckBox(ui->multithreadedRSX, emu_settings_type::MultithreadedRSX);
 	SubscribeTooltip(ui->multithreadedRSX, tooltips.settings.multithreaded_rsx);
 

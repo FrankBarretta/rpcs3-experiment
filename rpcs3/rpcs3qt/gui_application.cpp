@@ -52,9 +52,11 @@
 #include <QStyleFactory>
 #include <QStyleHints>
 
+#include <cmath>
 #include <clocale>
 
 #include "Emu/RSX/Null/NullGSRender.h"
+#include "Emu/RSX/rsx_utils.h"
 #include "Emu/RSX/GL/GLGSRender.h"
 
 #if defined(HAVE_VULKAN)
@@ -529,6 +531,10 @@ std::unique_ptr<gs_frame> gui_application::get_gs_frame()
 	extern const std::unordered_map<video_resolution, std::pair<int, int>, value_hash<video_resolution>> g_video_out_resolution_map;
 
 	auto [w, h] = ::at32(g_video_out_resolution_map, g_cfg.video.resolution);
+	if (const double ultra_wide_aspect = rsx::get_configured_aspect_ratio(); ultra_wide_aspect > 16. / 9.)
+	{
+		w = static_cast<int>(std::ceil(h * ultra_wide_aspect));
+	}
 
 	const bool resize_game_window = m_gui_settings->GetValue(gui::gs_resize).toBool();
 

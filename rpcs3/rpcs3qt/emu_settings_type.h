@@ -72,6 +72,7 @@ enum class emu_settings_type
 	RenderdocCompatibility,
 	GPUTextureScaling,
 	StretchToDisplayArea,
+	UltraWideScreen,
 	VulkanAdapter,
 	ForceHighpZ,
 	StrictRenderingMode,

@@ -974,6 +974,13 @@
                 </widget>
                </item>
                <item>
+                <widget class="QCheckBox" name="ultraWideScreen">
+                 <property name="text">
+                  <string>Ultra Wide Screen</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
                 <widget class="QCheckBox" name="multithreadedRSX">
                  <property name="text">
                   <string>Multithreaded RSX</string>

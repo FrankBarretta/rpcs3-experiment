@@ -16,6 +16,7 @@
 #include "vkutils/scratch.h"
 
 #include "Emu/RSX/rsx_methods.h"
+#include "Emu/RSX/rsx_utils.h"
 #include "Emu/RSX/Host/MM.h"
 #include "Emu/RSX/Host/RSXDMAWriter.h"
 #include "Emu/RSX/NV47/HW/context_accessors.define.h"
@@ -1990,6 +1991,7 @@ void VKGSRender::load_program_env()
 		*(reinterpret_cast<f32*>(buf + 72)) = ctx->point_size() * resolution_scaling_config.scale_factor();
 		*(reinterpret_cast<f32*>(buf + 76)) = ctx->clip_min();
 		*(reinterpret_cast<f32*>(buf + 80)) = ctx->clip_max();
+		*(reinterpret_cast<f32*>(buf + 84)) = static_cast<f32>(std::min(1., (16. / 9.) / rsx::get_configured_aspect_ratio()));
 
 		m_vertex_env_ring_info.unmap();
 		m_vertex_env_dynamic_offset = mem;

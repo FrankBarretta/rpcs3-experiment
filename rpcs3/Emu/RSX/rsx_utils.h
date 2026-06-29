@@ -29,6 +29,8 @@ namespace rsx
 
 	extern atomic_t<u64> g_rsx_shared_tag;
 
+	double get_configured_aspect_ratio();
+
 	enum class problem_severity : u8
 	{
 		low,

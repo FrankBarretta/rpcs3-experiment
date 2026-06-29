@@ -66,6 +66,9 @@ void fmt_class_string<video_aspect>::format(std::string& out, u64 arg)
 		{
 		case video_aspect::_4_3: return "4:3";
 		case video_aspect::_16_9: return "16:9";
+		case video_aspect::_21_9: return "21:9";
+		case video_aspect::_32_9: return "32:9";
+		case video_aspect::_48_9: return "48:9";
 		}
 
 		return unknown;

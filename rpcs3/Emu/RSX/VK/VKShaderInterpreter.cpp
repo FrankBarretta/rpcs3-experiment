@@ -214,7 +214,8 @@ namespace vk
 		"#define transform_branch_bits get_vertex_context().transform_branch_bits\n"
 		"#define point_size get_vertex_context().point_size\n"
 		"#define z_near get_vertex_context().z_near\n"
-		"#define z_far get_vertex_context().z_far\n\n";
+		"#define z_far get_vertex_context().z_far\n"
+		"#define ultrawide_x_scale get_vertex_context().ultrawide_x_scale\n\n";
 
 		// Insert vp stream input
 		builder << "\n"

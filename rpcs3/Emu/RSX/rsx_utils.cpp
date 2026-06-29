@@ -28,6 +28,30 @@ namespace rsx
 {
 	atomic_t<u64> g_rsx_shared_tag{ 0 };
 
+	double get_configured_aspect_ratio()
+	{
+		const video_aspect aspect = g_cfg.video.aspect_ratio.get();
+
+		if (g_cfg.video.ultra_wide_screen &&
+		    aspect != video_aspect::_21_9 &&
+		    aspect != video_aspect::_32_9 &&
+		    aspect != video_aspect::_48_9)
+		{
+			return 32. / 9.;
+		}
+
+		switch (aspect)
+		{
+		case video_aspect::_4_3: return 4. / 3.;
+		case video_aspect::_16_9: return 16. / 9.;
+		case video_aspect::_21_9: return 21. / 9.;
+		case video_aspect::_32_9: return 32. / 9.;
+		case video_aspect::_48_9: return 48. / 9.;
+		}
+
+		return 16. / 9.;
+	}
+
 	void convert_scale_image(u8 *dst, AVPixelFormat dst_format, int dst_width, int dst_height, int dst_pitch,
 		const u8 *src, AVPixelFormat src_format, int src_width, int src_height, int src_pitch, int src_slice_h, bool bilinear)
 	{
@@ -139,6 +163,9 @@ namespace rsx
 		{
 		default:
 		case video_aspect::_16_9:
+		case video_aspect::_21_9:
+		case video_aspect::_32_9:
+		case video_aspect::_48_9:
 			aspect = CELL_VIDEO_OUT_ASPECT_16_9;
 			break;
 		case video_aspect::_4_3:
@@ -179,6 +206,11 @@ namespace rsx
 
 	double avconf::get_aspect_ratio() const
 	{
+		if (const double configured_aspect = get_configured_aspect_ratio(); configured_aspect > 16. / 9.)
+		{
+			return configured_aspect;
+		}
+
 		switch (aspect)
 		{
 		case CELL_VIDEO_OUT_ASPECT_16_9: return 16. / 9.;
@@ -205,8 +237,9 @@ namespace rsx
 			return {};
 		}
 
-		// Unconstrained aspect ratio conversion
-		return size2u{ static_cast<u32>(image_dimensions.height * get_aspect_ratio()), image_dimensions.height };
+		const double configured_aspect = get_aspect_ratio();
+
+		return size2u{ static_cast<u32>(image_dimensions.height * configured_aspect), image_dimensions.height };
 	}
 
 	areau avconf::aspect_convert_region(const size2u& image_dimensions, const size2u& output_dimensions) const
@@ -219,12 +252,21 @@ namespace rsx
 		}
 
 		// Fit the input image into the virtual display 'window'
-		const auto source_aspect = 1. * image_dimensions.width / image_dimensions.height;
-		const auto virtual_output = video_frame_size();
-		const auto area1 = convert_aspect_ratio_impl(virtual_output, source_aspect);
+		const double source_aspect = 1. * image_dimensions.width / image_dimensions.height;
+		const double configured_aspect = get_aspect_ratio();
+		auto virtual_output = video_frame_size();
+
+		if (configured_aspect > 16. / 9.)
+		{
+			virtual_output.width = static_cast<u32>(virtual_output.height * configured_aspect);
+		}
+
+		const auto area1 = configured_aspect > 16. / 9. && source_aspect <= 16. / 9.
+			? areau{ 0, 0, virtual_output.width, virtual_output.height }
+			: convert_aspect_ratio_impl(virtual_output, source_aspect);
 
 		// Fit the virtual display into the physical display
-		const auto area2 = convert_aspect_ratio_impl(output_dimensions, get_aspect_ratio());
+		const auto area2 = convert_aspect_ratio_impl(output_dimensions, configured_aspect);
 
 		// Merge the two regions. Since aspect ratio was conserved between both transforms, a simple scale can be used
 		const double stretch_x = 1. * area2.width() / virtual_output.width;

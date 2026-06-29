@@ -60,6 +60,9 @@ const extern std::unordered_map<video_aspect, CellVideoOutDisplayAspect, value_h
 {
 	{ video_aspect::_16_9, CELL_VIDEO_OUT_ASPECT_16_9 },
 	{ video_aspect::_4_3,  CELL_VIDEO_OUT_ASPECT_4_3 },
+	{ video_aspect::_21_9, CELL_VIDEO_OUT_ASPECT_16_9 },
+	{ video_aspect::_32_9, CELL_VIDEO_OUT_ASPECT_16_9 },
+	{ video_aspect::_48_9, CELL_VIDEO_OUT_ASPECT_16_9 },
 };
 
 template<>
@@ -349,14 +352,14 @@ error_code cellVideoOutGetDeviceInfo(u32 videoOut, u32 deviceIndex, vm::ptr<Cell
 		break;
 	case video_resolution::_480p:
 		add_mode(CELL_VIDEO_OUT_RESOLUTION_480, CELL_VIDEO_OUT_SCAN_MODE_PROGRESSIVE, CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE, CELL_VIDEO_OUT_ASPECT_4_3);
-		if (g_cfg.video.aspect_ratio == video_aspect::_16_9)
+		if (g_cfg.video.aspect_ratio != video_aspect::_4_3)
 		{
 			add_mode(CELL_VIDEO_OUT_RESOLUTION_480, CELL_VIDEO_OUT_SCAN_MODE_PROGRESSIVE, CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE, CELL_VIDEO_OUT_ASPECT_16_9);
 		}
 		break;
 	case video_resolution::_480i:
 		add_mode(CELL_VIDEO_OUT_RESOLUTION_480, CELL_VIDEO_OUT_SCAN_MODE_INTERLACE, CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE, CELL_VIDEO_OUT_ASPECT_4_3);
-		if (g_cfg.video.aspect_ratio == video_aspect::_16_9)
+		if (g_cfg.video.aspect_ratio != video_aspect::_4_3)
 		{
 			add_mode(CELL_VIDEO_OUT_RESOLUTION_480, CELL_VIDEO_OUT_SCAN_MODE_INTERLACE, CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE, CELL_VIDEO_OUT_ASPECT_16_9);
 		}
@@ -364,7 +367,7 @@ error_code cellVideoOutGetDeviceInfo(u32 videoOut, u32 deviceIndex, vm::ptr<Cell
 	case video_resolution::_576p:
 		add_mode(CELL_VIDEO_OUT_RESOLUTION_576, CELL_VIDEO_OUT_SCAN_MODE_PROGRESSIVE, CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE, CELL_VIDEO_OUT_ASPECT_4_3);
 		add_mode(CELL_VIDEO_OUT_RESOLUTION_480, CELL_VIDEO_OUT_SCAN_MODE_PROGRESSIVE, CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE, CELL_VIDEO_OUT_ASPECT_4_3);
-		if (g_cfg.video.aspect_ratio == video_aspect::_16_9)
+		if (g_cfg.video.aspect_ratio != video_aspect::_4_3)
 		{
 			add_mode(CELL_VIDEO_OUT_RESOLUTION_576, CELL_VIDEO_OUT_SCAN_MODE_PROGRESSIVE, CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE, CELL_VIDEO_OUT_ASPECT_16_9);
 			add_mode(CELL_VIDEO_OUT_RESOLUTION_480, CELL_VIDEO_OUT_SCAN_MODE_PROGRESSIVE, CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE, CELL_VIDEO_OUT_ASPECT_16_9);
@@ -373,7 +376,7 @@ error_code cellVideoOutGetDeviceInfo(u32 videoOut, u32 deviceIndex, vm::ptr<Cell
 	case video_resolution::_576i:
 		add_mode(CELL_VIDEO_OUT_RESOLUTION_576, CELL_VIDEO_OUT_SCAN_MODE_INTERLACE, CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE, CELL_VIDEO_OUT_ASPECT_4_3);
 		add_mode(CELL_VIDEO_OUT_RESOLUTION_480, CELL_VIDEO_OUT_SCAN_MODE_INTERLACE, CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE, CELL_VIDEO_OUT_ASPECT_4_3);
-		if (g_cfg.video.aspect_ratio == video_aspect::_16_9)
+		if (g_cfg.video.aspect_ratio != video_aspect::_4_3)
 		{
 			add_mode(CELL_VIDEO_OUT_RESOLUTION_576, CELL_VIDEO_OUT_SCAN_MODE_INTERLACE, CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE, CELL_VIDEO_OUT_ASPECT_16_9);
 			add_mode(CELL_VIDEO_OUT_RESOLUTION_480, CELL_VIDEO_OUT_SCAN_MODE_INTERLACE, CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE, CELL_VIDEO_OUT_ASPECT_16_9);

@@ -205,6 +205,9 @@ enum class video_aspect
 {
 	_4_3,
 	_16_9,
+	_21_9,
+	_32_9,
+	_48_9,
 };
 
 enum class frame_limit_type
