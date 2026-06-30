@@ -55,6 +55,26 @@ vec4 apply_zclip_xform(
 }
 #endif
 
+vec4 apply_ultrawide_xform(
+	const in vec4 pos,
+	const in vec4 rsx_pos,
+	const in float x_scale)
+{
+	if (x_scale == 1.0)
+	{
+		return pos;
+	}
+
+	// Fullscreen/post-process quads and UI are usually pre-transformed with W = 1.
+	// Scaling them collapses the final image back into the center 16:9 area.
+	if (abs(rsx_pos.w - 1.0) <= 0.0001 || abs(rsx_pos.w) <= 0.0001)
+	{
+		return pos;
+	}
+
+	return vec4(pos.x * x_scale, pos.yzw);
+}
+
 #if defined(_ENABLE_INSTANCED_CONSTANTS)
 // Workaround for GL vs VK builtin variable naming
 #ifdef VULKAN

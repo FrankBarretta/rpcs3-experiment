@@ -472,8 +472,9 @@ void VKVertexDecompilerThread::insertMainEnd(std::stringstream& OS)
 		}
 	}
 
+	OS << "	vec4 rsx_position = gl_Position;\n";
 	OS << "	gl_Position = gl_Position * scale_offset_mat;\n";
-	OS << "	gl_Position.x *= ultrawide_x_scale;\n";
+	OS << "	gl_Position = apply_ultrawide_xform(gl_Position, rsx_position, ultrawide_x_scale);\n";
 	OS << "	gl_Position = apply_zclip_xform(gl_Position, z_near, z_far);\n";
 	OS << "}\n";
 }

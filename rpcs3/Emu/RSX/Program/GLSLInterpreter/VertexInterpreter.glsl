@@ -599,8 +599,9 @@ void main()
 	write_output(13, 20);
 	write_output(14, 21);
 
-	vec4 pos = dest[0] * scale_offset_mat;
-	pos.x *= ultrawide_x_scale;
+	vec4 rsx_position = dest[0];
+	vec4 pos = rsx_position * scale_offset_mat;
+	pos = apply_ultrawide_xform(pos, rsx_position, ultrawide_x_scale);
 
 #ifdef Z_NEGATIVE_ONE_TO_ONE
 	pos.z = (pos.z + pos.z) - pos.w;
