@@ -5,6 +5,7 @@
 
 #include "VKAsyncScheduler.h"
 #include "VKGSRender.h"
+#include "Emu/RSX/Remix/RemixBridge.h"
 #include "vkutils/buffer_object.h"
 #include "vkutils/chip_class.h"
 #include <vulkan/vulkan_core.h>
@@ -921,6 +922,11 @@ void VKGSRender::emit_geometry(u32 sub_index)
 
 	m_frame_stats.vertex_upload_time += m_profiler.duration();
 
+	if (m_remix_bridge)
+	{
+		m_remix_bridge->note_rsx_draw(upload_info.vertex_draw_count, upload_info.index_info.has_value(), draw_call.pass_count());
+	}
+
 	// Faults are allowed during vertex upload. Ensure consistent CB state after uploads.
 	// Queries are spawned and closed outside render pass scope for consistency reasons.
 	if (m_current_command_buffer->flags & vk::command_buffer::cb_load_occluson_task)
@@ -1126,6 +1132,11 @@ void VKGSRender::begin()
 	}
 
 	init_buffers(rsx::framebuffer_creation_context::context_draw);
+
+	if (m_remix_bridge)
+	{
+		m_remix_bridge->begin_frame(static_cast<u32>(m_frame->client_width()), static_cast<u32>(m_frame->client_height()));
+	}
 
 	if (m_graphics_state & rsx::pipeline_state::invalidate_pipeline_bits)
 	{

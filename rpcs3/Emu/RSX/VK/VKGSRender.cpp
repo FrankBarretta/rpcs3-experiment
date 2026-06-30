@@ -15,6 +15,7 @@
 #include "vkutils/buffer_object.h"
 #include "vkutils/scratch.h"
 
+#include "Emu/RSX/Remix/RemixBridge.h"
 #include "Emu/RSX/rsx_methods.h"
 #include "Emu/RSX/Host/MM.h"
 #include "Emu/RSX/Host/RSXDMAWriter.h"
@@ -790,6 +791,8 @@ VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 
 VKGSRender::~VKGSRender()
 {
+	m_remix_bridge.reset();
+
 	if (m_device == VK_NULL_HANDLE)
 	{
 		//Initialization failed
@@ -1238,6 +1241,12 @@ void VKGSRender::on_init_thread()
 	GSRender::on_init_thread();
 	zcull_ctrl.reset(static_cast<::rsx::reports::ZCULL_control*>(this));
 
+	if (g_cfg.video.rtx_remix.enabled.get())
+	{
+		m_remix_bridge = std::make_unique<rsx::remix::bridge>();
+		m_remix_bridge->initialize(m_frame->handle());
+	}
+
 	if (g_cfg.video.shadermode == shader_mode::async_with_interpreter ||
 		g_cfg.video.shadermode == shader_mode::interpreter_only)
 	{
@@ -1268,6 +1277,8 @@ void VKGSRender::on_init_thread()
 
 void VKGSRender::on_exit()
 {
+	m_remix_bridge.reset();
+
 	GSRender::on_exit();
 	vk::destroy_pipe_compiler(); // Ensure no pending shaders being compiled
 	zcull_ctrl.release();

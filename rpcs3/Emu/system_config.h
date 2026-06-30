@@ -197,6 +197,18 @@ struct cfg_root : cfg::node
 
 		} vk{ this };
 
+		struct node_rtx_remix : cfg::node
+		{
+			node_rtx_remix(cfg::node* _this) : cfg::node(_this, "RTX Remix") {}
+
+			cfg::_bool enabled{ this, "Enabled", false, true };
+			cfg::string runtime_dll_path{ this, "Runtime DLL Path", "d3d9.dll", true };
+			cfg::_bool present_output{ this, "Present Output", true, true };
+			cfg::_bool debug_triangle{ this, "Debug Triangle", true, true };
+			cfg::_bool editor_mode{ this, "Editor Mode", false, true };
+
+		} rtx_remix{ this };
+
 		struct node_perf_overlay : cfg::node
 		{
 			node_perf_overlay(cfg::node* _this) : cfg::node(_this, "Performance Overlay") {}

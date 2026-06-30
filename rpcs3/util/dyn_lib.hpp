@@ -33,6 +33,8 @@ namespace utils
 		bool load(const std::string& path);
 #ifdef _WIN32
 		bool load(const std::wstring& path);
+		bool load_with_altered_search_path(const std::wstring& path);
+		bool load_with_search_flags(const std::wstring& path, unsigned long flags);
 #endif
 		void close();
 

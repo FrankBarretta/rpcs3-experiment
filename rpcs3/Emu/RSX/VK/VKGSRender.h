@@ -35,6 +35,11 @@ namespace vk
 	using host_data_t = rsx::host_gpu_context_t;
 }
 
+namespace rsx::remix
+{
+	class bridge;
+}
+
 class VKGSRender : public GSRender, public ::rsx::reports::ZCULL_control
 {
 private:
@@ -198,6 +203,8 @@ private:
 
 	//Vertex layout
 	rsx::vertex_input_layout m_vertex_layout;
+
+	std::unique_ptr<rsx::remix::bridge> m_remix_bridge;
 
 	vk::shader_interpreter m_shader_interpreter;
 	u32 m_interpreter_state;

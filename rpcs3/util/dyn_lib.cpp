@@ -35,6 +35,18 @@ namespace utils
 		m_handle = LoadLibraryW(path.c_str());
 		return loaded();
 	}
+
+	bool dynamic_library::load_with_altered_search_path(const std::wstring& path)
+	{
+		m_handle = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+		return loaded();
+	}
+
+	bool dynamic_library::load_with_search_flags(const std::wstring& path, unsigned long flags)
+	{
+		m_handle = LoadLibraryExW(path.c_str(), nullptr, flags);
+		return loaded();
+	}
 #endif
 
 	void dynamic_library::close()

@@ -2,6 +2,7 @@
 #include "VKGSRender.h"
 #include "vkutils/buffer_object.h"
 #include "vkutils/memory.h"
+#include "Emu/RSX/Remix/RemixBridge.h"
 #include "Emu/RSX/Overlays/overlay_manager.h"
 #include "Emu/RSX/Overlays/overlay_debug_overlay.h"
 #include "Emu/Cell/Modules/cellVideoOut.h"
@@ -959,6 +960,11 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 	}
 
 	queue_swap_request();
+
+	if (m_remix_bridge)
+	{
+		m_remix_bridge->present(m_frame->handle(), static_cast<u32>(m_swapchain_dims.width), static_cast<u32>(m_swapchain_dims.height));
+	}
 
 	m_frame_stats.flip_time = m_profiler.duration();
 
