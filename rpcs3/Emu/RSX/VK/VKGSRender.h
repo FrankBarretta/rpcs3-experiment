@@ -247,6 +247,7 @@ private:
 	void check_present_status();
 
 	vk::vertex_upload_info upload_vertex_data();
+	void submit_remix_geometry(const vk::vertex_upload_info& vertex_info);
 	rsx::simple_array<u8> m_scratch_mem;
 
 	bool load_program();

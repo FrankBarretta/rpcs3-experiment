@@ -10,6 +10,13 @@
 #include "vkutils/chip_class.h"
 #include <vulkan/vulkan_core.h>
 
+#include <bit>
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <span>
+#include <vector>
+
 namespace vk
 {
 	VkImageViewType get_view_type(rsx::texture_dimension_extended type)
@@ -116,6 +123,384 @@ namespace vk
 			// If the shader changes between binds to "disable" the cyclic nature, we could end up here.
 			// Draw 1 (cyllic) -> texture_barrier -> Draw 2 (no textures) -> attachment_optimal -> Draw 3 (cylic again, no new data) -> incorrect layout.
 			vk::as_rtt(raw)->texture_barrier(cmd);
+			break;
+		}
+	}
+}
+
+namespace
+{
+	constexpr u32 max_remix_capture_vertices = 65536;
+	constexpr u32 max_remix_capture_indices = 196608;
+	constexpr u32 max_remix_capture_bytes = 16 * 1024 * 1024;
+
+	struct remix_position_stream
+	{
+		const std::byte* data = nullptr;
+		u32 stride = 0;
+		u32 range_first = 0;
+		bool single_vertex = false;
+		rsx::vertex_base_type type = rsx::vertex_base_type::f;
+		u8 size = 0;
+	};
+
+	u16 read_be16(const std::byte* src)
+	{
+		u16 value = 0;
+		std::memcpy(&value, src, sizeof(value));
+		return static_cast<u16>((value >> 8) | (value << 8));
+	}
+
+	u32 read_be32(const std::byte* src)
+	{
+		u32 value = 0;
+		std::memcpy(&value, src, sizeof(value));
+		return ((value & 0x000000ffu) << 24) |
+			((value & 0x0000ff00u) << 8) |
+			((value & 0x00ff0000u) >> 8) |
+			((value & 0xff000000u) >> 24);
+	}
+
+	s32 sign_extend(u32 value, u32 bits)
+	{
+		const u32 shift = 32 - bits;
+		return static_cast<s32>(value << shift) >> shift;
+	}
+
+	float decode_position_component(const std::byte* src, rsx::vertex_base_type type, u32 component)
+	{
+		switch (type)
+		{
+		case rsx::vertex_base_type::f:
+		{
+			const u32 bits = read_be32(src + component * sizeof(u32));
+			return std::bit_cast<float>(bits);
+		}
+		case rsx::vertex_base_type::sf:
+		{
+			const u16 bits = read_be16(src + component * sizeof(u16));
+			return rsx::decode_fp16(bits);
+		}
+		case rsx::vertex_base_type::s1:
+		{
+			const s16 value = static_cast<s16>(read_be16(src + component * sizeof(u16)));
+			return (static_cast<float>(value) + 0.5f) / 32767.5f;
+		}
+		case rsx::vertex_base_type::s32k:
+		{
+			const s16 value = static_cast<s16>(read_be16(src + component * sizeof(u16)));
+			return static_cast<float>(value);
+		}
+		case rsx::vertex_base_type::ub:
+		{
+			return static_cast<float>(static_cast<const u8*>(static_cast<const void*>(src))[component]) / 255.0f;
+		}
+		case rsx::vertex_base_type::ub256:
+		{
+			return static_cast<float>(static_cast<const u8*>(static_cast<const void*>(src))[component]);
+		}
+		case rsx::vertex_base_type::cmp:
+		{
+			const u32 bits = read_be32(src);
+			const u32 raw = component == 0 ? (bits & 0x7ffu) :
+				component == 1 ? ((bits >> 11) & 0x7ffu) :
+				((bits >> 22) & 0x3ffu);
+			const u32 shift = component == 2 ? 6 : 5;
+			return static_cast<float>(sign_extend(raw << shift, 16)) / 32767.0f;
+		}
+		default:
+			return std::numeric_limits<float>::quiet_NaN();
+		}
+	}
+
+	bool decode_position(const remix_position_stream& stream, u32 vertex_index, rsx::remix::mesh_vertex& out)
+	{
+		if (!stream.data || !stream.stride || !stream.size)
+		{
+			return false;
+		}
+
+		if (!stream.single_vertex && vertex_index < stream.range_first)
+		{
+			return false;
+		}
+
+		const u32 local_index = stream.single_vertex ? 0 : vertex_index - stream.range_first;
+		const std::byte* src = stream.data + local_index * stream.stride;
+
+		const u32 component_count = stream.type == rsx::vertex_base_type::cmp ? 3 : std::min<u32>(stream.size, 3);
+		float values[3] = {};
+
+		for (u32 i = 0; i < component_count; i++)
+		{
+			values[i] = decode_position_component(src, stream.type, i);
+			if (!std::isfinite(values[i]))
+			{
+				return false;
+			}
+		}
+
+		out.x = values[0];
+		out.y = values[1];
+		out.z = values[2];
+		return true;
+	}
+
+	bool resolve_position_stream(
+		const rsx::vertex_input_layout& layout,
+		const vk::vertex_upload_info& vertex_info,
+		const std::vector<std::byte>& persistent_data,
+		const std::vector<std::byte>& volatile_data,
+		const rsx::draw_command_processor& draw_processor,
+		remix_position_stream& out)
+	{
+		constexpr u8 position_attribute = 0;
+
+		if (!(layout.attribute_mask & (1u << position_attribute)))
+		{
+			return false;
+		}
+
+		const auto placement = layout.attribute_placement[position_attribute];
+		if (placement == rsx::attribute_buffer_placement::none)
+		{
+			return false;
+		}
+
+		if (placement == rsx::attribute_buffer_placement::persistent)
+		{
+			u32 persistent_offset = 0;
+
+			for (auto* block : layout.interleaved_blocks)
+			{
+				const auto range = block->calculate_required_range(vertex_info.first_vertex, vertex_info.allocated_vertex_count);
+				const u32 block_size = range.second * block->attribute_stride;
+
+				const auto location = std::find_if(block->locations.begin(), block->locations.end(), [](const rsx::interleaved_attribute_t& attr)
+				{
+					return attr.index == position_attribute;
+				});
+
+				if (location != block->locations.end())
+				{
+					const auto& info = rsx::method_registers.vertex_arrays_info[position_attribute];
+					const u32 local_address = info.offset() & 0x7fffffffu;
+					if (local_address < block->base_offset || persistent_offset + block_size > persistent_data.size())
+					{
+						return false;
+					}
+
+					const u32 attribute_offset = local_address - block->base_offset;
+					if (attribute_offset >= block->attribute_stride)
+					{
+						return false;
+					}
+
+					out.data = persistent_data.data() + persistent_offset + attribute_offset;
+					out.stride = block->attribute_stride;
+					out.range_first = range.first;
+					out.single_vertex = block->single_vertex;
+					out.type = info.type();
+					out.size = info.size();
+					return out.size != 0;
+				}
+
+				persistent_offset += block_size;
+			}
+
+			return false;
+		}
+
+		u32 volatile_offset = 0;
+		const auto& draw_call = rsx::method_registers.current_draw_clause;
+
+		if (draw_call.command == rsx::draw_command::inlined_array)
+		{
+			for (const u8 index : layout.referenced_registers)
+			{
+				if (index == position_attribute)
+				{
+					return false;
+				}
+
+				volatile_offset += 16;
+			}
+
+			if (layout.interleaved_blocks.empty())
+			{
+				return false;
+			}
+
+			auto* block = layout.interleaved_blocks[0];
+			u32 attribute_offset = 0;
+
+			for (const auto& attr : block->locations)
+			{
+				const auto& info = rsx::method_registers.vertex_arrays_info[attr.index];
+				if (attr.index == position_attribute)
+				{
+					if (volatile_offset + attribute_offset >= volatile_data.size())
+					{
+						return false;
+					}
+
+					out.data = volatile_data.data() + volatile_offset + attribute_offset;
+					out.stride = block->attribute_stride;
+					out.range_first = 0;
+					out.single_vertex = false;
+					out.type = info.type();
+					out.size = info.size();
+					return out.size != 0;
+				}
+
+				attribute_offset += rsx::get_vertex_type_size_on_host(info.type(), info.size());
+			}
+
+			return false;
+		}
+
+		if (draw_call.is_immediate_draw)
+		{
+			for (const auto& info : layout.volatile_blocks)
+			{
+				const auto& push_buffer = draw_processor.push_buffer_vertex(info.first);
+				const u32 stride = rsx::get_vertex_type_size_on_host(push_buffer.type, push_buffer.size);
+
+				if (info.first == position_attribute)
+				{
+					if (volatile_offset + info.second > volatile_data.size())
+					{
+						return false;
+					}
+
+					out.data = volatile_data.data() + volatile_offset;
+					out.stride = stride;
+					out.range_first = 0;
+					out.single_vertex = false;
+					out.type = push_buffer.type;
+					out.size = static_cast<u8>(push_buffer.size);
+					return out.size != 0;
+				}
+
+				volatile_offset += info.second;
+			}
+		}
+
+		return false;
+	}
+
+	u32 read_index_value(std::span<const std::byte> raw_indices, u32 index, rsx::index_array_type type)
+	{
+		const u32 stride = get_index_type_size(type);
+		const std::byte* src = raw_indices.data() + index * stride;
+		return type == rsx::index_array_type::u16 ? read_be16(src) : read_be32(src);
+	}
+
+	u64 fnv1a_mix(u64 hash, u64 value)
+	{
+		for (u32 i = 0; i < 8; i++)
+		{
+			hash ^= (value >> (i * 8)) & 0xffu;
+			hash *= 1099511628211ull;
+		}
+
+		return hash;
+	}
+
+	void append_triangle(std::vector<u32>& indices, u32 a, u32 b, u32 c)
+	{
+		if (a == umax || b == umax || c == umax)
+		{
+			return;
+		}
+
+		if (a == b || b == c || a == c)
+		{
+			return;
+		}
+
+		if (indices.size() + 3 > max_remix_capture_indices)
+		{
+			return;
+		}
+
+		indices.push_back(a);
+		indices.push_back(b);
+		indices.push_back(c);
+	}
+
+	void triangulate_indices(rsx::primitive_type primitive, std::span<const u32> source, std::vector<u32>& indices)
+	{
+		switch (primitive)
+		{
+		case rsx::primitive_type::triangles:
+		{
+			for (u32 i = 0; i + 2 < source.size(); i += 3)
+			{
+				append_triangle(indices, source[i], source[i + 1], source[i + 2]);
+			}
+			break;
+		}
+		case rsx::primitive_type::triangle_strip:
+		{
+			u32 strip_start = 0;
+			for (u32 i = 0; i < source.size(); i++)
+			{
+				if (source[i] == umax)
+				{
+					strip_start = i + 1;
+					continue;
+				}
+
+				if (i - strip_start < 2)
+				{
+					continue;
+				}
+
+				if (((i - strip_start) & 1) == 0)
+				{
+					append_triangle(indices, source[i - 2], source[i - 1], source[i]);
+				}
+				else
+				{
+					append_triangle(indices, source[i - 1], source[i - 2], source[i]);
+				}
+			}
+			break;
+		}
+		case rsx::primitive_type::triangle_fan:
+		case rsx::primitive_type::polygon:
+		{
+			if (source.size() < 3 || source[0] == umax)
+			{
+				break;
+			}
+
+			for (u32 i = 2; i < source.size(); i++)
+			{
+				append_triangle(indices, source[0], source[i - 1], source[i]);
+			}
+			break;
+		}
+		case rsx::primitive_type::quads:
+		{
+			for (u32 i = 0; i + 3 < source.size(); i += 4)
+			{
+				append_triangle(indices, source[i], source[i + 1], source[i + 2]);
+				append_triangle(indices, source[i], source[i + 2], source[i + 3]);
+			}
+			break;
+		}
+		case rsx::primitive_type::quad_strip:
+		{
+			for (u32 i = 0; i + 3 < source.size(); i += 2)
+			{
+				append_triangle(indices, source[i], source[i + 1], source[i + 2]);
+				append_triangle(indices, source[i + 2], source[i + 1], source[i + 3]);
+			}
+			break;
+		}
+		default:
 			break;
 		}
 	}
@@ -867,6 +1252,161 @@ bool VKGSRender::bind_interpreter_texture_env()
 	return out_of_memory;
 }
 
+void VKGSRender::submit_remix_geometry(const vk::vertex_upload_info& vertex_info)
+{
+	if (!m_remix_bridge || !m_remix_bridge->is_running())
+	{
+		return;
+	}
+
+	const auto& draw_call = rsx::method_registers.current_draw_clause;
+	if (draw_call.classify_mode() != rsx::primitive_class::polygon)
+	{
+		return;
+	}
+
+	if (!vertex_info.allocated_vertex_count || vertex_info.allocated_vertex_count > max_remix_capture_vertices)
+	{
+		return;
+	}
+
+	const auto required = calculate_memory_requirements(m_vertex_layout, vertex_info.first_vertex, vertex_info.allocated_vertex_count);
+	if (required.first > max_remix_capture_bytes ||
+		required.second > max_remix_capture_bytes ||
+		static_cast<usz>(required.first) + required.second > max_remix_capture_bytes)
+	{
+		return;
+	}
+
+	std::vector<std::byte> persistent_data(required.first);
+	std::vector<std::byte> volatile_data(required.second);
+
+	m_draw_processor.write_vertex_data_to_memory(
+		m_vertex_layout,
+		vertex_info.first_vertex,
+		vertex_info.allocated_vertex_count,
+		persistent_data.empty() ? nullptr : persistent_data.data(),
+		volatile_data.empty() ? nullptr : volatile_data.data());
+
+	remix_position_stream position_stream{};
+	if (!resolve_position_stream(m_vertex_layout, vertex_info, persistent_data, volatile_data, m_draw_processor, position_stream))
+	{
+		return;
+	}
+
+	rsx::remix::mesh_capture mesh;
+	mesh.vertices.resize(vertex_info.allocated_vertex_count);
+
+	for (u32 i = 0; i < vertex_info.allocated_vertex_count; i++)
+	{
+		const u32 vertex_index = vertex_info.first_vertex + i;
+		if (!decode_position(position_stream, vertex_index, mesh.vertices[i]))
+		{
+			return;
+		}
+	}
+
+	std::vector<u32> source_indices;
+	const bool indexed = draw_call.command == rsx::draw_command::indexed;
+	const bool restart_enabled = rsx::method_registers.restart_index_enabled();
+	const u32 restart_index = rsx::method_registers.restart_index();
+
+	auto to_local_index = [&](u32 source_index) -> u32
+	{
+		if (source_index == umax)
+		{
+			return umax;
+		}
+
+		const u32 vertex_index = indexed ?
+			rsx::get_index_from_base(source_index, vertex_info.vertex_index_offset) :
+			source_index;
+
+		if (vertex_index < vertex_info.first_vertex)
+		{
+			return umax;
+		}
+
+		const u32 local_index = vertex_index - vertex_info.first_vertex;
+		return local_index < vertex_info.allocated_vertex_count ? local_index : umax;
+	};
+
+	if (indexed)
+	{
+		const rsx::index_array_type index_type = draw_call.is_immediate_draw ?
+			rsx::index_array_type::u32 :
+			rsx::method_registers.index_type();
+
+		const auto raw_indices = m_draw_processor.get_raw_index_array(draw_call);
+		const u32 source_count = draw_call.get_elements_count();
+		if (!source_count || source_count > max_remix_capture_indices)
+		{
+			return;
+		}
+
+		if (static_cast<usz>(source_count) * get_index_type_size(index_type) > raw_indices.size())
+		{
+			return;
+		}
+
+		source_indices.reserve(source_count);
+		for (u32 i = 0; i < source_count; i++)
+		{
+			const u32 index = read_index_value(raw_indices, i, index_type);
+			source_indices.push_back(restart_enabled && index == restart_index ? umax : to_local_index(index));
+		}
+	}
+	else
+	{
+		u32 first = 0;
+		u32 count = vertex_info.allocated_vertex_count;
+
+		if (draw_call.command != rsx::draw_command::inlined_array)
+		{
+			const auto& range = draw_call.get_range();
+			first = range.first;
+			count = range.count;
+		}
+
+		if (!count || count > max_remix_capture_indices)
+		{
+			return;
+		}
+
+		source_indices.reserve(count);
+		for (u32 i = 0; i < count; i++)
+		{
+			source_indices.push_back(to_local_index(first + i));
+		}
+	}
+
+	triangulate_indices(draw_call.primitive, source_indices, mesh.indices);
+	if (mesh.indices.size() < 3)
+	{
+		return;
+	}
+
+	u64 hash = 1469598103934665603ull;
+	hash = fnv1a_mix(hash, static_cast<u64>(draw_call.primitive));
+	hash = fnv1a_mix(hash, vertex_info.allocated_vertex_count);
+	hash = fnv1a_mix(hash, mesh.indices.size());
+
+	for (const auto& vertex : mesh.vertices)
+	{
+		hash = fnv1a_mix(hash, std::bit_cast<u32>(vertex.x));
+		hash = fnv1a_mix(hash, std::bit_cast<u32>(vertex.y));
+		hash = fnv1a_mix(hash, std::bit_cast<u32>(vertex.z));
+	}
+
+	for (const u32 index : mesh.indices)
+	{
+		hash = fnv1a_mix(hash, index);
+	}
+
+	mesh.hash = hash;
+	m_remix_bridge->submit_mesh(mesh);
+}
+
 void VKGSRender::emit_geometry(u32 sub_index)
 {
 	auto &draw_call = rsx::method_registers.current_draw_clause;
@@ -925,6 +1465,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 	if (m_remix_bridge)
 	{
 		m_remix_bridge->note_rsx_draw(upload_info.vertex_draw_count, upload_info.index_info.has_value(), draw_call.pass_count());
+		submit_remix_geometry(upload_info);
 	}
 
 	// Faults are allowed during vertex upload. Ensure consistent CB state after uploads.

@@ -69,6 +69,11 @@ namespace rsx
 			return m_element_push_buffer;
 		}
 
+		const push_buffer_vertex_info& push_buffer_vertex(u32 attribute) const
+		{
+			return m_vertex_push_buffers[attribute];
+		}
+
 		// Host driver helpers
 		void fill_vertex_layout_state(
 			const vertex_input_layout& layout,
