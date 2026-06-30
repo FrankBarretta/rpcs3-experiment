@@ -13,6 +13,9 @@ namespace rsx::remix
 		float x = 0.0f;
 		float y = 0.0f;
 		float z = 0.0f;
+		float u = 0.0f;
+		float v = 0.0f;
+		u32 color = 0xffffffffu;
 	};
 
 	struct mesh_capture
@@ -20,6 +23,9 @@ namespace rsx::remix
 		std::vector<mesh_vertex> vertices;
 		std::vector<u32> indices;
 		u64 hash = 0;
+		u64 material_hash = 0;
+		float albedo[3] = { 1.0f, 1.0f, 1.0f };
+		float opacity = 1.0f;
 	};
 
 	class bridge final

@@ -144,8 +144,51 @@ namespace rsx::remix::api
 		std::uint64_t version;
 	};
 
-	struct remixapi_MaterialInfo;
 	struct remixapi_CameraMediumInfo;
+
+	struct remixapi_MaterialInfoOpaqueEXT
+	{
+		remixapi_StructType sType;
+		void* pNext;
+		remixapi_Path roughnessTexture;
+		remixapi_Path metallicTexture;
+		float anisotropy;
+		remixapi_Float3D albedoConstant;
+		float opacityConstant;
+		float roughnessConstant;
+		float metallicConstant;
+		remixapi_Bool thinFilmThickness_hasvalue;
+		float thinFilmThickness_value;
+		remixapi_Bool alphaIsThinFilmThickness;
+		remixapi_Path heightTexture;
+		float displaceIn;
+		remixapi_Bool useDrawCallAlphaState;
+		remixapi_Bool blendType_hasvalue;
+		int blendType_value;
+		remixapi_Bool invertedBlend;
+		int alphaTestType;
+		std::uint8_t alphaReferenceValue;
+		float displaceOut;
+	};
+
+	struct remixapi_MaterialInfo
+	{
+		remixapi_StructType sType;
+		void* pNext;
+		std::uint64_t hash;
+		remixapi_Path albedoTexture;
+		remixapi_Path normalTexture;
+		remixapi_Path tangentTexture;
+		remixapi_Path emissiveTexture;
+		float emissiveIntensity;
+		remixapi_Float3D emissiveColorConstant;
+		std::uint8_t spriteSheetRow;
+		std::uint8_t spriteSheetCol;
+		std::uint8_t spriteSheetFps;
+		std::uint8_t filterMode;
+		std::uint8_t wrapModeU;
+		std::uint8_t wrapModeV;
+	};
 
 	struct remixapi_HardcodedVertex
 	{
@@ -313,6 +356,8 @@ namespace rsx::remix::api
 	using PFN_remixapi_InitializeLibrary = remixapi_ErrorCode(RPCS3_REMIXAPI_CALL *)(const remixapi_InitializeLibraryInfo* info, remixapi_Interface* out_result);
 
 	static_assert(sizeof(remixapi_HardcodedVertex) == 64);
+	static_assert(sizeof(remixapi_MaterialInfoOpaqueEXT) == 112);
+	static_assert(sizeof(remixapi_MaterialInfo) == 80);
 	static_assert(sizeof(remixapi_Interface) == sizeof(void*) * 22);
 }
 

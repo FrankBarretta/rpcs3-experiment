@@ -10,6 +10,8 @@
 #include "vkutils/chip_class.h"
 #include <vulkan/vulkan_core.h>
 
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -134,7 +136,7 @@ namespace
 	constexpr u32 max_remix_capture_indices = 196608;
 	constexpr u32 max_remix_capture_bytes = 16 * 1024 * 1024;
 
-	struct remix_position_stream
+	struct remix_vertex_stream
 	{
 		const std::byte* data = nullptr;
 		u32 stride = 0;
@@ -167,7 +169,7 @@ namespace
 		return static_cast<s32>(value << shift) >> shift;
 	}
 
-	float decode_position_component(const std::byte* src, rsx::vertex_base_type type, u32 component)
+	float decode_vertex_component(const std::byte* src, rsx::vertex_base_type type, u32 component)
 	{
 		switch (type)
 		{
@@ -213,8 +215,10 @@ namespace
 		}
 	}
 
-	bool decode_position(const remix_position_stream& stream, u32 vertex_index, rsx::remix::mesh_vertex& out)
+	bool decode_vertex_values(const remix_vertex_stream& stream, u32 vertex_index, std::array<float, 4>& out)
 	{
+		out = { 0.0f, 0.0f, 0.0f, 1.0f };
+
 		if (!stream.data || !stream.stride || !stream.size)
 		{
 			return false;
@@ -228,16 +232,26 @@ namespace
 		const u32 local_index = stream.single_vertex ? 0 : vertex_index - stream.range_first;
 		const std::byte* src = stream.data + local_index * stream.stride;
 
-		const u32 component_count = stream.type == rsx::vertex_base_type::cmp ? 3 : std::min<u32>(stream.size, 3);
-		float values[3] = {};
+		const u32 component_count = stream.type == rsx::vertex_base_type::cmp ? 3 : std::min<u32>(stream.size, 4);
 
 		for (u32 i = 0; i < component_count; i++)
 		{
-			values[i] = decode_position_component(src, stream.type, i);
-			if (!std::isfinite(values[i]))
+			out[i] = decode_vertex_component(src, stream.type, i);
+			if (!std::isfinite(out[i]))
 			{
 				return false;
 			}
+		}
+
+		return true;
+	}
+
+	bool decode_position(const remix_vertex_stream& stream, u32 vertex_index, rsx::remix::mesh_vertex& out)
+	{
+		std::array<float, 4> values{};
+		if (!decode_vertex_values(stream, vertex_index, values))
+		{
+			return false;
 		}
 
 		out.x = values[0];
@@ -246,22 +260,21 @@ namespace
 		return true;
 	}
 
-	bool resolve_position_stream(
+	bool resolve_vertex_stream(
 		const rsx::vertex_input_layout& layout,
+		u8 attribute,
 		const vk::vertex_upload_info& vertex_info,
 		const std::vector<std::byte>& persistent_data,
 		const std::vector<std::byte>& volatile_data,
 		const rsx::draw_command_processor& draw_processor,
-		remix_position_stream& out)
+		remix_vertex_stream& out)
 	{
-		constexpr u8 position_attribute = 0;
-
-		if (!(layout.attribute_mask & (1u << position_attribute)))
+		if (!(layout.attribute_mask & (1u << attribute)))
 		{
 			return false;
 		}
 
-		const auto placement = layout.attribute_placement[position_attribute];
+		const auto placement = layout.attribute_placement[attribute];
 		if (placement == rsx::attribute_buffer_placement::none)
 		{
 			return false;
@@ -276,14 +289,14 @@ namespace
 				const auto range = block->calculate_required_range(vertex_info.first_vertex, vertex_info.allocated_vertex_count);
 				const u32 block_size = range.second * block->attribute_stride;
 
-				const auto location = std::find_if(block->locations.begin(), block->locations.end(), [](const rsx::interleaved_attribute_t& attr)
+				const auto location = std::find_if(block->locations.begin(), block->locations.end(), [attribute](const rsx::interleaved_attribute_t& attr)
 				{
-					return attr.index == position_attribute;
+					return attr.index == attribute;
 				});
 
 				if (location != block->locations.end())
 				{
-					const auto& info = rsx::method_registers.vertex_arrays_info[position_attribute];
+					const auto& info = rsx::method_registers.vertex_arrays_info[attribute];
 					const u32 local_address = info.offset() & 0x7fffffffu;
 					if (local_address < block->base_offset || persistent_offset + block_size > persistent_data.size())
 					{
@@ -318,7 +331,7 @@ namespace
 		{
 			for (const u8 index : layout.referenced_registers)
 			{
-				if (index == position_attribute)
+				if (index == attribute)
 				{
 					return false;
 				}
@@ -337,7 +350,7 @@ namespace
 			for (const auto& attr : block->locations)
 			{
 				const auto& info = rsx::method_registers.vertex_arrays_info[attr.index];
-				if (attr.index == position_attribute)
+				if (attr.index == attribute)
 				{
 					if (volatile_offset + attribute_offset >= volatile_data.size())
 					{
@@ -366,7 +379,7 @@ namespace
 				const auto& push_buffer = draw_processor.push_buffer_vertex(info.first);
 				const u32 stride = rsx::get_vertex_type_size_on_host(push_buffer.type, push_buffer.size);
 
-				if (info.first == position_attribute)
+				if (info.first == attribute)
 				{
 					if (volatile_offset + info.second > volatile_data.size())
 					{
@@ -405,6 +418,31 @@ namespace
 		}
 
 		return hash;
+	}
+
+	float clamp_remix_color(float value, rsx::vertex_base_type type)
+	{
+		if (type == rsx::vertex_base_type::ub256 || std::abs(value) > 1.0f)
+		{
+			value /= 255.0f;
+		}
+
+		return std::clamp(value, 0.0f, 1.0f);
+	}
+
+	u32 pack_remix_color(const std::array<float, 4>& color, rsx::vertex_base_type type)
+	{
+		const auto to_u8 = [type](float value) -> u32
+		{
+			value = clamp_remix_color(value, type);
+			return static_cast<u32>(std::lround(value * 255.0f));
+		};
+
+		const u32 r = to_u8(color[0]);
+		const u32 g = to_u8(color[1]);
+		const u32 b = to_u8(color[2]);
+		const u32 a = to_u8(color[3]);
+		return (a << 24) | (r << 16) | (g << 8) | b;
 	}
 
 	void append_triangle(std::vector<u32>& indices, u32 a, u32 b, u32 c)
@@ -1288,14 +1326,27 @@ void VKGSRender::submit_remix_geometry(const vk::vertex_upload_info& vertex_info
 		persistent_data.empty() ? nullptr : persistent_data.data(),
 		volatile_data.empty() ? nullptr : volatile_data.data());
 
-	remix_position_stream position_stream{};
-	if (!resolve_position_stream(m_vertex_layout, vertex_info, persistent_data, volatile_data, m_draw_processor, position_stream))
+	constexpr u8 position_attribute = 0;
+	constexpr u8 color_attribute = 3;
+	constexpr u8 texcoord0_attribute = 8;
+
+	remix_vertex_stream position_stream{};
+	if (!resolve_vertex_stream(m_vertex_layout, position_attribute, vertex_info, persistent_data, volatile_data, m_draw_processor, position_stream))
 	{
 		return;
 	}
 
+	remix_vertex_stream color_stream{};
+	const bool has_color_stream = resolve_vertex_stream(m_vertex_layout, color_attribute, vertex_info, persistent_data, volatile_data, m_draw_processor, color_stream);
+
+	remix_vertex_stream texcoord_stream{};
+	const bool has_texcoord_stream = resolve_vertex_stream(m_vertex_layout, texcoord0_attribute, vertex_info, persistent_data, volatile_data, m_draw_processor, texcoord_stream);
+
 	rsx::remix::mesh_capture mesh;
 	mesh.vertices.resize(vertex_info.allocated_vertex_count);
+
+	std::array<double, 4> color_sum = { 0.0, 0.0, 0.0, 0.0 };
+	u32 color_count = 0;
 
 	for (u32 i = 0; i < vertex_info.allocated_vertex_count; i++)
 	{
@@ -1304,6 +1355,40 @@ void VKGSRender::submit_remix_geometry(const vk::vertex_upload_info& vertex_info
 		{
 			return;
 		}
+
+		if (has_texcoord_stream)
+		{
+			std::array<float, 4> uv{};
+			if (decode_vertex_values(texcoord_stream, vertex_index, uv))
+			{
+				mesh.vertices[i].u = uv[0];
+				mesh.vertices[i].v = uv[1];
+			}
+		}
+
+		if (has_color_stream)
+		{
+			std::array<float, 4> color{};
+			if (decode_vertex_values(color_stream, vertex_index, color))
+			{
+				for (u32 j = 0; j < color.size(); j++)
+				{
+					color[j] = clamp_remix_color(color[j], color_stream.type);
+					color_sum[j] += color[j];
+				}
+
+				mesh.vertices[i].color = pack_remix_color(color, color_stream.type);
+				color_count++;
+			}
+		}
+	}
+
+	if (color_count)
+	{
+		mesh.albedo[0] = static_cast<float>(color_sum[0] / color_count);
+		mesh.albedo[1] = static_cast<float>(color_sum[1] / color_count);
+		mesh.albedo[2] = static_cast<float>(color_sum[2] / color_count);
+		mesh.opacity = static_cast<float>(color_sum[3] / color_count);
 	}
 
 	std::vector<u32> source_indices;
@@ -1404,6 +1489,19 @@ void VKGSRender::submit_remix_geometry(const vk::vertex_upload_info& vertex_info
 	}
 
 	mesh.hash = hash;
+
+	const auto quantize_material_channel = [](float value) -> u64
+	{
+		return static_cast<u64>(std::clamp<s32>(static_cast<s32>(std::lround(value * 15.0f)), 0, 15));
+	};
+
+	mesh.material_hash = 1469598103934665603ull;
+	mesh.material_hash = fnv1a_mix(mesh.material_hash, color_count ? 1ull : 0ull);
+	mesh.material_hash = fnv1a_mix(mesh.material_hash, quantize_material_channel(mesh.albedo[0]));
+	mesh.material_hash = fnv1a_mix(mesh.material_hash, quantize_material_channel(mesh.albedo[1]));
+	mesh.material_hash = fnv1a_mix(mesh.material_hash, quantize_material_channel(mesh.albedo[2]));
+	mesh.material_hash = fnv1a_mix(mesh.material_hash, quantize_material_channel(mesh.opacity));
+
 	m_remix_bridge->submit_mesh(mesh);
 }
 

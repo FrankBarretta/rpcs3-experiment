@@ -225,12 +225,25 @@ namespace rsx::remix
 		constexpr usz max_remix_mesh_vertices_per_frame = 100000;
 		constexpr usz max_remix_mesh_indices_per_frame = 300000;
 		constexpr usz max_remix_registered_meshes = 512;
+		constexpr usz max_remix_registered_materials = 512;
 		constexpr float max_remix_abs_position = 1000000.0f;
 		constexpr float max_remix_mesh_extent = 1000000.0f;
 	}
 
 	struct bridge::impl
 	{
+		struct registered_mesh_entry
+		{
+			u64 hash = 0;
+			api::remixapi_MeshHandle handle = nullptr;
+		};
+
+		struct registered_material_entry
+		{
+			u64 hash = 0;
+			api::remixapi_MaterialHandle handle = nullptr;
+		};
+
 #ifdef _WIN32
 		utils::dynamic_library runtime;
 		utils::dynamic_library particle_system;
@@ -241,7 +254,8 @@ namespace rsx::remix
 		api::remixapi_Interface api_table{};
 		api::remixapi_MeshHandle debug_mesh = nullptr;
 		api::remixapi_LightHandle debug_light = nullptr;
-		std::vector<api::remixapi_MeshHandle> registered_meshes;
+		std::vector<registered_mesh_entry> registered_meshes;
+		std::vector<registered_material_entry> registered_materials;
 
 		bool initialized = false;
 		bool frame_active = false;
@@ -250,6 +264,8 @@ namespace rsx::remix
 		bool logged_mesh_bridge = false;
 		bool logged_mesh_budget = false;
 		bool logged_mesh_registry_full = false;
+		bool logged_material_registry_full = false;
+		bool logged_material_bridge = false;
 		bool logged_mesh_sanity = false;
 		bool logged_mesh_stats = false;
 		bool logged_unsupported = false;
@@ -295,13 +311,117 @@ namespace rsx::remix
 		{
 			if (api_table.DestroyMesh)
 			{
-				for (const auto mesh : registered_meshes)
+				for (const auto& mesh : registered_meshes)
 				{
-					api_table.DestroyMesh(mesh);
+					api_table.DestroyMesh(mesh.handle);
 				}
 			}
 
 			registered_meshes.clear();
+		}
+
+		void destroy_registered_materials()
+		{
+			if (api_table.DestroyMaterial)
+			{
+				for (const auto& material : registered_materials)
+				{
+					api_table.DestroyMaterial(material.handle);
+				}
+			}
+
+			registered_materials.clear();
+		}
+
+		api::remixapi_MaterialHandle find_material(u64 hash) const
+		{
+			for (const auto& material : registered_materials)
+			{
+				if (material.hash == hash)
+				{
+					return material.handle;
+				}
+			}
+
+			return nullptr;
+		}
+
+		api::remixapi_MeshHandle find_mesh(u64 hash) const
+		{
+			for (const auto& mesh : registered_meshes)
+			{
+				if (mesh.hash == hash)
+				{
+					return mesh.handle;
+				}
+			}
+
+			return nullptr;
+		}
+
+		api::remixapi_MaterialHandle get_or_create_material(const mesh_capture& mesh)
+		{
+			if (!api_table.CreateMaterial || !api_table.DestroyMaterial)
+			{
+				return nullptr;
+			}
+
+			u64 hash = mesh.material_hash ? mesh.material_hash : 0x52504353334d4154ull;
+			if (const auto existing = find_material(hash))
+			{
+				return existing;
+			}
+
+			if (registered_materials.size() >= max_remix_registered_materials)
+			{
+				if (!logged_material_registry_full)
+				{
+					rsx_log.warning("RTX Remix: RSX material registry limit reached; using null materials for new meshes.");
+					logged_material_registry_full = true;
+				}
+
+				return nullptr;
+			}
+
+			api::remixapi_MaterialInfoOpaqueEXT opaque{};
+			opaque.sType = api::REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+			opaque.albedoConstant = { mesh.albedo[0], mesh.albedo[1], mesh.albedo[2] };
+			opaque.opacityConstant = std::clamp(mesh.opacity, 0.0f, 1.0f);
+			opaque.roughnessConstant = 0.55f;
+			opaque.metallicConstant = 0.0f;
+			opaque.thinFilmThickness_value = 200.0f;
+			opaque.useDrawCallAlphaState = true;
+			opaque.alphaTestType = 7;
+
+			api::remixapi_MaterialInfo material_info{};
+			material_info.sType = api::REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
+			material_info.pNext = &opaque;
+			material_info.hash = hash;
+			material_info.emissiveIntensity = 0.0f;
+			material_info.emissiveColorConstant = { 0.0f, 0.0f, 0.0f };
+			material_info.spriteSheetRow = 1;
+			material_info.spriteSheetCol = 1;
+			material_info.filterMode = 1;
+			material_info.wrapModeU = 1;
+			material_info.wrapModeV = 1;
+
+			api::remixapi_MaterialHandle handle = nullptr;
+			if (const auto status = api_table.CreateMaterial(&material_info, &handle);
+				status != api::REMIXAPI_ERROR_CODE_SUCCESS)
+			{
+				rsx_log.warning("RTX Remix: CreateMaterial for RSX draw failed: %s (%u).", remix_error_to_string(status), static_cast<u32>(status));
+				return nullptr;
+			}
+
+			registered_materials.push_back({ hash, handle });
+
+			if (!logged_material_bridge)
+			{
+				rsx_log.notice("RTX Remix: RSX material bridge is creating opaque materials from vertex color state.");
+				logged_material_bridge = true;
+			}
+
+			return handle;
 		}
 
 		void reset_frame_bounds()
@@ -451,11 +571,7 @@ namespace rsx::remix
 		void reset_runtime()
 		{
 #ifdef _WIN32
-			if (present_window)
-			{
-				DestroyWindow(present_window);
-				present_window = nullptr;
-			}
+			destroy_present_window();
 			using_external_swapchain = false;
 
 			particle_system.close();
@@ -467,6 +583,7 @@ namespace rsx::remix
 			dll_directory_cookies.clear();
 #endif
 			destroy_registered_meshes();
+			destroy_registered_materials();
 			api_table = {};
 			debug_mesh = nullptr;
 			debug_light = nullptr;
@@ -484,6 +601,15 @@ namespace rsx::remix
 		}
 
 #ifdef _WIN32
+		void destroy_present_window()
+		{
+			if (present_window)
+			{
+				DestroyWindow(present_window);
+				present_window = nullptr;
+			}
+		}
+
 		bool add_dll_directory(const std::string& path)
 		{
 			if (path.empty() || !fs::is_dir(path))
@@ -686,6 +812,7 @@ namespace rsx::remix
 			status != api::REMIXAPI_ERROR_CODE_SUCCESS)
 		{
 			rsx_log.error("RTX Remix: Startup failed: %s (%u).", remix_error_to_string(status), static_cast<u32>(status));
+			m_impl->destroy_present_window();
 			m_impl->runtime.close();
 			m_impl->reset_runtime();
 			return;
@@ -911,11 +1038,9 @@ namespace rsx::remix
 			hash = 0x52504353334d0001ull;
 		}
 
-		api::remixapi_MeshHandle handle = reinterpret_cast<api::remixapi_MeshHandle>(hash);
-		const bool already_registered =
-			std::find(m_impl->registered_meshes.begin(), m_impl->registered_meshes.end(), handle) != m_impl->registered_meshes.end();
+		api::remixapi_MeshHandle handle = m_impl->find_mesh(hash);
 
-		if (!already_registered)
+		if (!handle)
 		{
 			if (m_impl->registered_meshes.size() >= max_remix_registered_meshes)
 			{
@@ -938,15 +1063,20 @@ namespace rsx::remix
 				dst.position[1] = src.y;
 				dst.position[2] = src.z;
 				dst.normal[2] = -1.0f;
-				dst.color = 0xffffffffu;
+				dst.texcoord[0] = src.u;
+				dst.texcoord[1] = src.v;
+				dst.color = src.color;
 				vertices.push_back(dst);
 			}
+
+			const auto material = m_impl->get_or_create_material(mesh);
 
 			api::remixapi_MeshInfoSurfaceTriangles triangles{};
 			triangles.vertices_values = vertices.data();
 			triangles.vertices_count = vertices.size();
 			triangles.indices_values = mesh.indices.data();
 			triangles.indices_count = mesh.indices.size();
+			triangles.material = material;
 
 			api::remixapi_MeshInfo mesh_info{};
 			mesh_info.sType = api::REMIXAPI_STRUCT_TYPE_MESH_INFO;
@@ -963,7 +1093,7 @@ namespace rsx::remix
 			}
 
 			handle = created_handle;
-			m_impl->registered_meshes.push_back(handle);
+			m_impl->registered_meshes.push_back({ hash, handle });
 		}
 
 		api::remixapi_InstanceInfo instance_info{};
@@ -1018,9 +1148,10 @@ namespace rsx::remix
 
 		if (!m_impl->logged_mesh_stats || (m_impl->frame_index && (m_impl->frame_index % 60) == 0))
 		{
-			rsx_log.notice("RTX Remix: frame stats: meshes=%u, registered=%zu, rejected=%u, draws=%u.",
+			rsx_log.notice("RTX Remix: frame stats: meshes=%u, registered=%zu, materials=%zu, rejected=%u, draws=%u.",
 				m_impl->meshes_this_frame,
 				m_impl->registered_meshes.size(),
+				m_impl->registered_materials.size(),
 				m_impl->rejected_meshes_this_frame,
 				m_impl->draws_this_frame);
 			m_impl->logged_mesh_stats = true;
@@ -1068,6 +1199,10 @@ namespace rsx::remix
 			return;
 		}
 
+#ifdef _WIN32
+		m_impl->destroy_present_window();
+#endif
+
 		m_impl->destroy_registered_meshes();
 
 		if (m_impl->debug_mesh && m_impl->api_table.DestroyMesh)
@@ -1075,6 +1210,8 @@ namespace rsx::remix
 			m_impl->api_table.DestroyMesh(m_impl->debug_mesh);
 			m_impl->debug_mesh = nullptr;
 		}
+
+		m_impl->destroy_registered_materials();
 
 		if (m_impl->debug_light && m_impl->api_table.DestroyLight)
 		{
