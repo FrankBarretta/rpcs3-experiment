@@ -224,6 +224,150 @@ namespace rsx::remix
 			return result;
 		}
 
+		// ---- Game-camera reconstruction helpers (see impl::setup_camera_from_view_proj) ----
+
+		std::array<float, 3> v3_sub(const std::array<float, 3>& a, const std::array<float, 3>& b)
+		{
+			return { a[0] - b[0], a[1] - b[1], a[2] - b[2] };
+		}
+
+		float v3_dot(const std::array<float, 3>& a, const std::array<float, 3>& b)
+		{
+			return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+		}
+
+		float v3_length(const std::array<float, 3>& a)
+		{
+			return std::sqrt(v3_dot(a, a));
+		}
+
+		bool v3_normalize(std::array<float, 3>& a)
+		{
+			const float length = v3_length(a);
+			if (!std::isfinite(length) || length < 1e-6f)
+			{
+				return false;
+			}
+
+			a = { a[0] / length, a[1] / length, a[2] / length };
+			return true;
+		}
+
+		// Row-major 4x4 inverse via cofactor expansion (the classic MESA/GLU routine),
+		// computed in double to keep precision on projection-scale coefficients.
+		bool invert_mat4(const float in[16], float out[16])
+		{
+			double m[16];
+			for (u32 i = 0; i < 16; i++)
+			{
+				m[i] = in[i];
+			}
+
+			double inv[16];
+			inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+			inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+			inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+			inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+			inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+			inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+			inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+			inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+			inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+			inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+			inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+			inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+			inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+			inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+			inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+			inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+
+			const double det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+			if (!std::isfinite(det) || std::abs(det) < 1e-35)
+			{
+				return false;
+			}
+
+			const double inv_det = 1.0 / det;
+			for (u32 i = 0; i < 16; i++)
+			{
+				out[i] = static_cast<float>(inv[i] * inv_det);
+				if (!std::isfinite(out[i]))
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		bool unproject_ndc(const float inv_vp[16], float x, float y, float z, std::array<float, 3>& out)
+		{
+			float h[4];
+			for (u32 row = 0; row < 4; row++)
+			{
+				h[row] = inv_vp[row * 4 + 0] * x + inv_vp[row * 4 + 1] * y + inv_vp[row * 4 + 2] * z + inv_vp[row * 4 + 3];
+			}
+
+			if (!std::isfinite(h[3]) || std::abs(h[3]) < 1e-9f)
+			{
+				return false;
+			}
+
+			out = { h[0] / h[3], h[1] / h[3], h[2] / h[3] };
+			return std::isfinite(out[0]) && std::isfinite(out[1]) && std::isfinite(out[2]);
+		}
+
+		// Least-squares intersection point of a set of rays: solve sum(I - d*d^T) x = sum((I - d*d^T) p).
+		// Near-parallel rays (an ortho projection) make the system singular, which is the desired
+		// rejection path since an ortho camera has no eye to converge on.
+		bool converge_rays(const std::array<std::array<float, 3>, 4>& origins, const std::array<std::array<float, 3>, 4>& dirs, std::array<float, 3>& out)
+		{
+			double a[3][3] = {};
+			double b[3] = {};
+
+			for (u32 i = 0; i < 4; i++)
+			{
+				const double length = std::sqrt(
+					static_cast<double>(dirs[i][0]) * dirs[i][0] +
+					static_cast<double>(dirs[i][1]) * dirs[i][1] +
+					static_cast<double>(dirs[i][2]) * dirs[i][2]);
+
+				if (!(length > 1e-9))
+				{
+					return false;
+				}
+
+				const double d[3] = { dirs[i][0] / length, dirs[i][1] / length, dirs[i][2] / length };
+
+				for (u32 row = 0; row < 3; row++)
+				{
+					for (u32 col = 0; col < 3; col++)
+					{
+						const double proj = (row == col ? 1.0 : 0.0) - d[row] * d[col];
+						a[row][col] += proj;
+						b[row] += proj * origins[i][col];
+					}
+				}
+			}
+
+			const auto det3 = [](double a0, double a1, double a2, double b0, double b1, double b2, double c0, double c1, double c2)
+			{
+				return a0 * (b1 * c2 - b2 * c1) - a1 * (b0 * c2 - b2 * c0) + a2 * (b0 * c1 - b1 * c0);
+			};
+
+			const double det = det3(a[0][0], a[0][1], a[0][2], a[1][0], a[1][1], a[1][2], a[2][0], a[2][1], a[2][2]);
+			if (!std::isfinite(det) || std::abs(det) < 1e-9)
+			{
+				return false;
+			}
+
+			out[0] = static_cast<float>(det3(b[0], a[0][1], a[0][2], b[1], a[1][1], a[1][2], b[2], a[2][1], a[2][2]) / det);
+			out[1] = static_cast<float>(det3(a[0][0], b[0], a[0][2], a[1][0], b[1], a[1][2], a[2][0], b[2], a[2][2]) / det);
+			out[2] = static_cast<float>(det3(a[0][0], a[0][1], b[0], a[1][0], a[1][1], b[1], a[2][0], a[2][1], b[2]) / det);
+
+			return std::isfinite(out[0]) && std::isfinite(out[1]) && std::isfinite(out[2]);
+		}
+
 		// Generous internal safety ceilings. The per-frame mesh count and the mesh/material
 		// registry sizes are user-configurable (g_cfg.video.rtx_remix.*) so that large scenes
 		// can push far more geometry to Remix than the original fixed 64-mesh / 512-entry limits.
@@ -260,6 +404,9 @@ namespace rsx::remix
 		api::remixapi_Interface api_table{};
 		api::remixapi_MeshHandle debug_mesh = nullptr;
 		api::remixapi_LightHandle debug_light = nullptr;
+		// Per-frame scene light (headlight or bounds fallback). Kept separate from debug_light,
+		// which is reserved for the debug triangle.
+		api::remixapi_LightHandle frame_light = nullptr;
 		std::unordered_map<u64, api::remixapi_MeshHandle> registered_meshes;
 		std::unordered_map<u64, api::remixapi_MaterialHandle> registered_materials;
 
@@ -277,6 +424,16 @@ namespace rsx::remix
 		bool logged_unsupported = false;
 		bool logged_present_disabled = false;
 		bool logged_external_output_unwired = false;
+		bool logged_game_camera = false;
+		// Row-major world->clip view-projection captured from the game's draws.
+		// view_proj_valid means "some frame captured one" (it survives frames with no capture so
+		// the camera stays stable); view_proj_fresh means "captured during the current frame".
+		float view_proj[16] = {};
+		bool view_proj_valid = false;
+		bool view_proj_fresh = false;
+		// Reconstructed camera eye of the current frame; only trusted after SetupCamera succeeded.
+		float frame_eye[3] = {};
+		bool frame_eye_valid = false;
 		bool frame_bounds_valid = false;
 		std::array<float, 3> frame_bounds_min =
 		{
@@ -520,6 +677,182 @@ namespace rsx::remix
 			return true;
 		}
 
+		// Rebuild the game's real camera from the captured world->clip view-projection: invert it,
+		// unproject the 8 clip-volume corners to world space, converge the near->far edge rays on
+		// the eye and derive the parameterized camera from the near-plane rectangle. Any degenerate
+		// or implausible result returns false so the caller falls back to the auto-fit camera.
+		bool setup_camera_from_view_proj()
+		{
+			float inv_vp[16];
+			if (!invert_mat4(view_proj, inv_vp))
+			{
+				return false;
+			}
+
+			// Corner index bits: 1 = +x, 2 = +y, 4 = far. RSX clip z spans [0, 1].
+			std::array<std::array<float, 3>, 8> corners{};
+			for (u32 i = 0; i < 8; i++)
+			{
+				const float x = (i & 1) ? 1.0f : -1.0f;
+				const float y = (i & 2) ? 1.0f : -1.0f;
+				const float z = (i & 4) ? 1.0f : 0.0f;
+
+				if (!unproject_ndc(inv_vp, x, y, z, corners[i]))
+				{
+					return false;
+				}
+			}
+
+			std::array<std::array<float, 3>, 4> origins{};
+			std::array<std::array<float, 3>, 4> dirs{};
+			for (u32 i = 0; i < 4; i++)
+			{
+				origins[i] = corners[i];
+				dirs[i] = v3_sub(corners[i + 4], corners[i]);
+			}
+
+			std::array<float, 3> eye{};
+			if (!converge_rays(origins, dirs, eye) ||
+				std::abs(eye[0]) > max_remix_abs_position ||
+				std::abs(eye[1]) > max_remix_abs_position ||
+				std::abs(eye[2]) > max_remix_abs_position)
+			{
+				return false;
+			}
+
+			const auto average4 = [](const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c, const std::array<float, 3>& d)
+			{
+				return std::array<float, 3>
+				{
+					(a[0] + b[0] + c[0] + d[0]) * 0.25f,
+					(a[1] + b[1] + c[1] + d[1]) * 0.25f,
+					(a[2] + b[2] + c[2] + d[2]) * 0.25f
+				};
+			};
+
+			const auto near_center = average4(corners[0], corners[1], corners[2], corners[3]);
+			const auto far_center = average4(corners[4], corners[5], corners[6], corners[7]);
+
+			std::array<float, 3> forward = v3_sub(near_center, eye);
+			const float near_distance = v3_length(forward);
+			if (!std::isfinite(near_distance) || near_distance < 1e-5f || !v3_normalize(forward))
+			{
+				return false;
+			}
+
+			const float far_distance = v3_dot(v3_sub(far_center, eye), forward);
+			if (!std::isfinite(far_distance) || far_distance <= near_distance * 1.001f)
+			{
+				return false;
+			}
+
+			// Near-plane axes from the corner rectangle: +x edge midpoint minus -x, +y minus -y.
+			std::array<float, 3> right_axis =
+			{
+				(corners[1][0] + corners[3][0] - corners[0][0] - corners[2][0]) * 0.5f,
+				(corners[1][1] + corners[3][1] - corners[0][1] - corners[2][1]) * 0.5f,
+				(corners[1][2] + corners[3][2] - corners[0][2] - corners[2][2]) * 0.5f
+			};
+			std::array<float, 3> up_axis =
+			{
+				(corners[2][0] + corners[3][0] - corners[0][0] - corners[1][0]) * 0.5f,
+				(corners[2][1] + corners[3][1] - corners[0][1] - corners[1][1]) * 0.5f,
+				(corners[2][2] + corners[3][2] - corners[0][2] - corners[1][2]) * 0.5f
+			};
+
+			const float half_width = v3_length(right_axis) * 0.5f;
+			const float half_height = v3_length(up_axis) * 0.5f;
+			if (!(half_width > 1e-6f) || !(half_height > 1e-6f))
+			{
+				return false;
+			}
+
+			const float fov_y_degrees = 2.0f * std::atan(half_height / near_distance) * 57.2957795f;
+			const float aspect = half_width / half_height;
+			if (!(fov_y_degrees > 1.0f) || !(fov_y_degrees < 175.0f) || !(aspect > 0.05f) || !(aspect < 20.0f))
+			{
+				return false;
+			}
+
+			// Gram-Schmidt against forward keeps the corner-derived orientation while giving Remix
+			// a clean orthonormal basis.
+			const float right_dot = v3_dot(right_axis, forward);
+			right_axis = { right_axis[0] - forward[0] * right_dot, right_axis[1] - forward[1] * right_dot, right_axis[2] - forward[2] * right_dot };
+			if (!v3_normalize(right_axis))
+			{
+				return false;
+			}
+
+			const float up_dot_forward = v3_dot(up_axis, forward);
+			const float up_dot_right = v3_dot(up_axis, right_axis);
+			up_axis =
+			{
+				up_axis[0] - forward[0] * up_dot_forward - right_axis[0] * up_dot_right,
+				up_axis[1] - forward[1] * up_dot_forward - right_axis[1] * up_dot_right,
+				up_axis[2] - forward[2] * up_dot_forward - right_axis[2] * up_dot_right
+			};
+			if (!v3_normalize(up_axis))
+			{
+				return false;
+			}
+
+			// The clip-space y sign is ambiguous (RSX/Vulkan y-down vs GL y-up conventions); this
+			// knob flips the image the right way up when a game resolves it the other way.
+			if (g_cfg.video.rtx_remix.camera_flip_up.get())
+			{
+				up_axis = { -up_axis[0], -up_axis[1], -up_axis[2] };
+			}
+
+			api::remixapi_CameraInfoParameterizedEXT camera_params{};
+			camera_params.sType = api::REMIXAPI_STRUCT_TYPE_CAMERA_INFO_PARAMETERIZED_EXT;
+			camera_params.position = { eye[0], eye[1], eye[2] };
+			camera_params.forward = { forward[0], forward[1], forward[2] };
+			camera_params.up = { up_axis[0], up_axis[1], up_axis[2] };
+			camera_params.right = { right_axis[0], right_axis[1], right_axis[2] };
+			camera_params.fovYInDegrees = fov_y_degrees;
+			camera_params.aspect = aspect;
+			camera_params.nearPlane = std::max(0.001f, near_distance);
+			camera_params.farPlane = std::max(far_distance, near_distance * 10.0f);
+
+			api::remixapi_CameraInfo camera_info{};
+			camera_info.sType = api::REMIXAPI_STRUCT_TYPE_CAMERA_INFO;
+			camera_info.pNext = &camera_params;
+			camera_info.type = api::REMIXAPI_CAMERA_TYPE_WORLD;
+
+			if (const auto status = api_table.SetupCamera(&camera_info);
+				status != api::REMIXAPI_ERROR_CODE_SUCCESS)
+			{
+				rsx_log.warning("RTX Remix: SetupCamera (game camera) failed: %s (%u).", remix_error_to_string(status), static_cast<u32>(status));
+				return false;
+			}
+
+			// Commit the eye only after SetupCamera accepted it, so a rejected camera can never
+			// leave the headlight at a phantom position.
+			frame_eye[0] = eye[0];
+			frame_eye[1] = eye[1];
+			frame_eye[2] = eye[2];
+			frame_eye_valid = true;
+			return true;
+		}
+
+		void update_camera(u32 width, u32 height, bool auto_fit)
+		{
+			if (g_cfg.video.rtx_remix.use_game_camera.get() && view_proj_valid && setup_camera_from_view_proj())
+			{
+				if (!logged_game_camera)
+				{
+					rsx_log.success("RTX Remix: using the game camera reconstructed from vertex-program constants.");
+					logged_game_camera = true;
+				}
+
+				return;
+			}
+
+			// Auto-fit fallback: no trusted eye this frame, so the headlight must not use a stale one.
+			frame_eye_valid = false;
+			setup_camera(width, height, auto_fit);
+		}
+
 		void submit_frame_light()
 		{
 			if (!api_table.CreateLight || !api_table.DestroyLight || !api_table.DrawLightInstance)
@@ -527,15 +860,11 @@ namespace rsx::remix
 				return;
 			}
 
-			if (debug_light)
+			// The scene light follows the camera and the scene, so it is recreated every frame.
+			if (frame_light)
 			{
-				api_table.DrawLightInstance(debug_light);
-				return;
-			}
-
-			if (!frame_bounds_valid)
-			{
-				return;
+				api_table.DestroyLight(frame_light);
+				frame_light = nullptr;
 			}
 
 			std::array<float, 3> center = { 0.0f, -1.0f, 0.0f };
@@ -558,23 +887,48 @@ namespace rsx::remix
 
 			api::remixapi_LightInfoSphereEXT sphere_light{};
 			sphere_light.sType = api::REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
-			sphere_light.position = { center[0], center[1] - radius, center[2] - radius * 1.5f };
-			sphere_light.radius = std::max(0.1f, radius * 0.02f);
 
 			api::remixapi_LightInfo light_info{};
 			light_info.sType = api::REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
 			light_info.pNext = &sphere_light;
-			light_info.hash = 0x5250435333524c31ull;
-			light_info.radiance = { radius * 3000.0f, radius * 3000.0f, radius * 3000.0f };
+			light_info.hash = 0x5250435333524c32ull;
 
-			if (const auto status = api_table.CreateLight(&light_info, &debug_light);
+			// The emitter must stay SMALL relative to the scene: any geometry inside the emitting
+			// sphere is lit near-uniformly from every direction and reads as self-glowing. A
+			// scene-scaled radius (previously up to thousands of units) swallowed most of the
+			// world and made everything look emissive. Remix auto-exposure (on by default) sets
+			// the overall image level, so a small emitter with fixed radiance is enough; the
+			// intensity knob remains for per-game taste.
+			const float emitter_radius = std::clamp(radius * 0.002f, 0.05f, 10.0f);
+			const float radiance = 6000.0f * (static_cast<float>(g_cfg.video.rtx_remix.headlight_intensity.get()) / 100.0f);
+
+			if (g_cfg.video.rtx_remix.headlight.get() && frame_eye_valid)
+			{
+				// Headlight at the reconstructed camera eye: whatever the camera sees is lit.
+				sphere_light.position = { frame_eye[0], frame_eye[1], frame_eye[2] };
+				sphere_light.radius = emitter_radius;
+				light_info.radiance = { radiance, radiance, radiance };
+			}
+			else if (frame_bounds_valid)
+			{
+				// Legacy bounds-derived light for frames without a reconstructed eye.
+				sphere_light.position = { center[0], center[1] - radius, center[2] - radius * 1.5f };
+				sphere_light.radius = emitter_radius;
+				light_info.radiance = { radiance, radiance, radiance };
+			}
+			else
+			{
+				return;
+			}
+
+			if (const auto status = api_table.CreateLight(&light_info, &frame_light);
 				status != api::REMIXAPI_ERROR_CODE_SUCCESS)
 			{
 				rsx_log.warning("RTX Remix: CreateLight failed: %s (%u).", remix_error_to_string(status), static_cast<u32>(status));
 				return;
 			}
 
-			api_table.DrawLightInstance(debug_light);
+			api_table.DrawLightInstance(frame_light);
 		}
 
 		void reset_runtime()
@@ -596,9 +950,13 @@ namespace rsx::remix
 			api_table = {};
 			debug_mesh = nullptr;
 			debug_light = nullptr;
+			frame_light = nullptr;
 			initialized = false;
 			frame_active = false;
 			scene_created = false;
+			view_proj_valid = false;
+			view_proj_fresh = false;
+			frame_eye_valid = false;
 			reset_frame_bounds();
 			draws_this_frame = 0;
 			indexed_draws_this_frame = 0;
@@ -845,11 +1203,12 @@ namespace rsx::remix
 			return;
 		}
 
-		// Reuse the previous frame's bounds before collecting the new frame.
+		// Reuse the previous frame's view-projection/bounds before collecting the new frame.
 		// Remix command ordering makes this more reliable than setting the camera
 		// only after all current-frame instances have already been submitted.
-		m_impl->setup_camera(width, height, m_impl->frame_bounds_valid);
+		m_impl->update_camera(width, height, m_impl->frame_bounds_valid);
 		m_impl->reset_frame_bounds();
+		m_impl->view_proj_fresh = false;
 		m_impl->frame_active = true;
 		m_impl->draws_this_frame = 0;
 		m_impl->indexed_draws_this_frame = 0;
@@ -956,6 +1315,16 @@ namespace rsx::remix
 		if (!m_impl || !m_impl->initialized || !m_impl->frame_active)
 		{
 			return;
+		}
+
+		// Record the frame's camera matrix before any mesh filtering: even a draw later dropped
+		// by budget or sanity checks can donate a valid view-projection. First capture wins, since
+		// games draw the main scene before overlays.
+		if (mesh.has_view_proj && !m_impl->view_proj_fresh)
+		{
+			std::copy_n(mesh.view_proj, 16, m_impl->view_proj);
+			m_impl->view_proj_valid = true;
+			m_impl->view_proj_fresh = true;
 		}
 
 		if (mesh.vertices.size() < 3 || mesh.indices.size() < 3)
@@ -1154,7 +1523,7 @@ namespace rsx::remix
 		}
 
 #ifdef _WIN32
-		m_impl->setup_camera(width, height, m_impl->meshes_this_frame > 0);
+		m_impl->update_camera(width, height, m_impl->meshes_this_frame > 0);
 		m_impl->submit_frame_light();
 
 		if (!m_impl->logged_mesh_stats || (m_impl->frame_index && (m_impl->frame_index % 60) == 0))
@@ -1228,6 +1597,12 @@ namespace rsx::remix
 		{
 			m_impl->api_table.DestroyLight(m_impl->debug_light);
 			m_impl->debug_light = nullptr;
+		}
+
+		if (m_impl->frame_light && m_impl->api_table.DestroyLight)
+		{
+			m_impl->api_table.DestroyLight(m_impl->frame_light);
+			m_impl->frame_light = nullptr;
 		}
 
 		if (m_impl->api_table.Shutdown)

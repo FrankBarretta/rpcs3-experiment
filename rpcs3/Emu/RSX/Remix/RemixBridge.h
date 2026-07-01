@@ -35,6 +35,11 @@ namespace rsx::remix
 		// Filesystem path (utf8) of the albedo texture captured from the bound RSX
 		// fragment texture. Empty when no usable texture was captured for this draw.
 		std::string albedo_texture_path;
+		// Row-major world->clip view-projection recovered from the game's vertex-program
+		// constants for this draw (clip = M * (x, y, z, 1)). Only valid when has_view_proj
+		// is set; the bridge uses it to reconstruct the game's real camera.
+		float view_proj[16] = {};
+		bool has_view_proj = false;
 	};
 
 	class bridge final

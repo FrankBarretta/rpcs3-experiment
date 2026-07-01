@@ -471,6 +471,132 @@ namespace
 		return (a << 24) | (r << 16) | (g << 8) | b;
 	}
 
+	// The game's world->clip view-projection is not exposed by RPCS3, so recover it by scanning
+	// the vertex-program constants for four consecutive registers that map this draw's decoded
+	// ATTR0 positions into the RSX clip volume (|x| <= w, |y| <= w, z in [0, w], w > 0).
+	// Constants are stored host-endian (copy_data_swap_u32 already byteswapped them on upload),
+	// so bit_cast directly instead of the big-endian reads used for raw vertex data.
+	// Row-major convention, matching the vertex-program dp4 idiom: clip = M * (x, y, z, 1).
+	bool extract_view_projection(const rsx::remix::mesh_capture& mesh, float out[16])
+	{
+		// Sample only index-referenced vertices; unreferenced slots may hold garbage padding.
+		std::array<std::array<float, 3>, 24> samples{};
+		u32 sample_count = 0;
+
+		std::array<float, 3> sample_min = { std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max() };
+		std::array<float, 3> sample_max = { std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() };
+
+		const usz step = std::max<usz>(1, mesh.indices.size() / samples.size());
+		for (usz i = 0; i < mesh.indices.size() && sample_count < samples.size(); i += step)
+		{
+			const u32 index = mesh.indices[i];
+			if (index >= mesh.vertices.size())
+			{
+				return false;
+			}
+
+			const auto& vertex = mesh.vertices[index];
+			samples[sample_count++] = { vertex.x, vertex.y, vertex.z };
+
+			for (u32 axis = 0; axis < 3; axis++)
+			{
+				sample_min[axis] = std::min(sample_min[axis], samples[sample_count - 1][axis]);
+				sample_max[axis] = std::max(sample_max[axis], samples[sample_count - 1][axis]);
+			}
+		}
+
+		// Too few or spatially degenerate samples cannot discriminate a real camera matrix.
+		const float spread = std::max({ sample_max[0] - sample_min[0], sample_max[1] - sample_min[1], sample_max[2] - sample_min[2] });
+		if (sample_count < 6 || !(spread > 1e-3f))
+		{
+			return false;
+		}
+
+		const auto& constants = rsx::method_registers.transform_constants;
+
+		const auto test_slot = [&](u32 slot) -> bool
+		{
+			float m[16];
+			for (u32 row = 0; row < 4; row++)
+			{
+				for (u32 col = 0; col < 4; col++)
+				{
+					m[row * 4 + col] = std::bit_cast<float>(constants[slot + row][col]);
+					if (!std::isfinite(m[row * 4 + col]))
+					{
+						return false;
+					}
+				}
+			}
+
+			float w_min = std::numeric_limits<float>::max();
+			float w_max = std::numeric_limits<float>::lowest();
+
+			for (u32 i = 0; i < sample_count; i++)
+			{
+				const auto& p = samples[i];
+				const float x = m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3];
+				const float y = m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7];
+				const float z = m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11];
+				const float w = m[12] * p[0] + m[13] * p[1] + m[14] * p[2] + m[15];
+
+				if (!(w > 1e-6f) ||
+					std::abs(x) > w * 1.02f ||
+					std::abs(y) > w * 1.02f ||
+					z < w * -0.02f ||
+					z > w * 1.02f)
+				{
+					return false;
+				}
+
+				w_min = std::min(w_min, w);
+				w_max = std::max(w_max, w);
+			}
+
+			// A perspective camera yields depth-dependent w. Constant w means an ortho/HUD
+			// transform, which would reconstruct a bogus camera; let another draw provide the VP.
+			return w_max > w_min * 1.05f;
+		};
+
+		// The same constant slot usually holds the VP for the whole session; cache the winner to
+		// skip the full 509-candidate scan. RSX thread only, hence thread_local.
+		static thread_local u32 cached_slot = umax;
+
+		u32 found = umax;
+		if (cached_slot != umax && test_slot(cached_slot))
+		{
+			found = cached_slot;
+		}
+		else
+		{
+			for (u32 slot = 0; slot + 4 <= constants.size(); slot++)
+			{
+				if (test_slot(slot))
+				{
+					found = slot;
+					break;
+				}
+			}
+		}
+
+		if (found == umax)
+		{
+			return false;
+		}
+
+		cached_slot = found;
+
+		for (u32 row = 0; row < 4; row++)
+		{
+			for (u32 col = 0; col < 4; col++)
+			{
+				out[row * 4 + col] = std::bit_cast<float>(constants[found + row][col]);
+			}
+		}
+
+		return true;
+	}
+
 	void append_triangle(std::vector<u32>& indices, u32 a, u32 b, u32 c)
 	{
 		if (a == umax || b == umax || c == umax)
@@ -1504,6 +1630,11 @@ void VKGSRender::submit_remix_geometry(const vk::vertex_upload_info& vertex_info
 	if (mesh.indices.size() < 3)
 	{
 		return;
+	}
+
+	if (g_cfg.video.rtx_remix.use_game_camera.get())
+	{
+		mesh.has_view_proj = extract_view_projection(mesh, mesh.view_proj);
 	}
 
 	u64 hash = 1469598103934665603ull;
