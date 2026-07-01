@@ -2,6 +2,7 @@
 #include "RemixBridge.h"
 
 #include "RemixApi.h"
+#include "RemixTexture.h"
 #include "Emu/system_config.h"
 #include "Utilities/File.h"
 #include "Utilities/StrFmt.h"
@@ -16,6 +17,8 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace rsx::remix
@@ -221,29 +224,32 @@ namespace rsx::remix
 			return result;
 		}
 
-		constexpr u32 max_remix_meshes_per_frame = 64;
-		constexpr usz max_remix_mesh_vertices_per_frame = 100000;
-		constexpr usz max_remix_mesh_indices_per_frame = 300000;
-		constexpr usz max_remix_registered_meshes = 512;
-		constexpr usz max_remix_registered_materials = 512;
-		constexpr float max_remix_abs_position = 1000000.0f;
-		constexpr float max_remix_mesh_extent = 1000000.0f;
+		// Generous internal safety ceilings. The per-frame mesh count and the mesh/material
+		// registry sizes are user-configurable (g_cfg.video.rtx_remix.*) so that large scenes
+		// can push far more geometry to Remix than the original fixed 64-mesh / 512-entry limits.
+		constexpr usz max_remix_mesh_vertices_per_frame = 16000000;
+		constexpr usz max_remix_mesh_indices_per_frame = 48000000;
+		constexpr float max_remix_abs_position = 10000000.0f;
+		constexpr float max_remix_mesh_extent = 10000000.0f;
+
+		usz cfg_max_meshes_per_frame()
+		{
+			return g_cfg.video.rtx_remix.max_meshes_per_frame.get();
+		}
+
+		usz cfg_max_registered_meshes()
+		{
+			return g_cfg.video.rtx_remix.max_registered_meshes.get();
+		}
+
+		usz cfg_max_registered_materials()
+		{
+			return g_cfg.video.rtx_remix.max_registered_materials.get();
+		}
 	}
 
 	struct bridge::impl
 	{
-		struct registered_mesh_entry
-		{
-			u64 hash = 0;
-			api::remixapi_MeshHandle handle = nullptr;
-		};
-
-		struct registered_material_entry
-		{
-			u64 hash = 0;
-			api::remixapi_MaterialHandle handle = nullptr;
-		};
-
 #ifdef _WIN32
 		utils::dynamic_library runtime;
 		utils::dynamic_library particle_system;
@@ -254,8 +260,8 @@ namespace rsx::remix
 		api::remixapi_Interface api_table{};
 		api::remixapi_MeshHandle debug_mesh = nullptr;
 		api::remixapi_LightHandle debug_light = nullptr;
-		std::vector<registered_mesh_entry> registered_meshes;
-		std::vector<registered_material_entry> registered_materials;
+		std::unordered_map<u64, api::remixapi_MeshHandle> registered_meshes;
+		std::unordered_map<u64, api::remixapi_MaterialHandle> registered_materials;
 
 		bool initialized = false;
 		bool frame_active = false;
@@ -311,9 +317,9 @@ namespace rsx::remix
 		{
 			if (api_table.DestroyMesh)
 			{
-				for (const auto& mesh : registered_meshes)
+				for (const auto& [hash, handle] : registered_meshes)
 				{
-					api_table.DestroyMesh(mesh.handle);
+					api_table.DestroyMesh(handle);
 				}
 			}
 
@@ -324,9 +330,9 @@ namespace rsx::remix
 		{
 			if (api_table.DestroyMaterial)
 			{
-				for (const auto& material : registered_materials)
+				for (const auto& [hash, handle] : registered_materials)
 				{
-					api_table.DestroyMaterial(material.handle);
+					api_table.DestroyMaterial(handle);
 				}
 			}
 
@@ -335,28 +341,14 @@ namespace rsx::remix
 
 		api::remixapi_MaterialHandle find_material(u64 hash) const
 		{
-			for (const auto& material : registered_materials)
-			{
-				if (material.hash == hash)
-				{
-					return material.handle;
-				}
-			}
-
-			return nullptr;
+			const auto it = registered_materials.find(hash);
+			return it == registered_materials.end() ? nullptr : it->second;
 		}
 
 		api::remixapi_MeshHandle find_mesh(u64 hash) const
 		{
-			for (const auto& mesh : registered_meshes)
-			{
-				if (mesh.hash == hash)
-				{
-					return mesh.handle;
-				}
-			}
-
-			return nullptr;
+			const auto it = registered_meshes.find(hash);
+			return it == registered_meshes.end() ? nullptr : it->second;
 		}
 
 		api::remixapi_MaterialHandle get_or_create_material(const mesh_capture& mesh)
@@ -372,7 +364,7 @@ namespace rsx::remix
 				return existing;
 			}
 
-			if (registered_materials.size() >= max_remix_registered_materials)
+			if (registered_materials.size() >= cfg_max_registered_materials())
 			{
 				if (!logged_material_registry_full)
 				{
@@ -383,15 +375,24 @@ namespace rsx::remix
 				return nullptr;
 			}
 
+			const bool has_texture = !mesh.albedo_texture_path.empty();
+
 			api::remixapi_MaterialInfoOpaqueEXT opaque{};
 			opaque.sType = api::REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
-			opaque.albedoConstant = { mesh.albedo[0], mesh.albedo[1], mesh.albedo[2] };
+			// When a texture is bound, keep the albedo constant white so the captured
+			// texture is shown faithfully instead of being tinted by the averaged vertex color.
+			opaque.albedoConstant = has_texture
+				? api::remixapi_Float3D{ 1.0f, 1.0f, 1.0f }
+				: api::remixapi_Float3D{ mesh.albedo[0], mesh.albedo[1], mesh.albedo[2] };
 			opaque.opacityConstant = std::clamp(mesh.opacity, 0.0f, 1.0f);
 			opaque.roughnessConstant = 0.55f;
 			opaque.metallicConstant = 0.0f;
 			opaque.thinFilmThickness_value = 200.0f;
 			opaque.useDrawCallAlphaState = true;
 			opaque.alphaTestType = 7;
+
+			// Keep the wide path alive until CreateMaterial has consumed it.
+			[[maybe_unused]] std::wstring albedo_texture_wpath;
 
 			api::remixapi_MaterialInfo material_info{};
 			material_info.sType = api::REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
@@ -405,6 +406,14 @@ namespace rsx::remix
 			material_info.wrapModeU = 1;
 			material_info.wrapModeV = 1;
 
+#ifdef _WIN32
+			if (has_texture)
+			{
+				albedo_texture_wpath = utf8_to_wchar(mesh.albedo_texture_path);
+				material_info.albedoTexture = albedo_texture_wpath.c_str();
+			}
+#endif
+
 			api::remixapi_MaterialHandle handle = nullptr;
 			if (const auto status = api_table.CreateMaterial(&material_info, &handle);
 				status != api::REMIXAPI_ERROR_CODE_SUCCESS)
@@ -413,7 +422,7 @@ namespace rsx::remix
 				return nullptr;
 			}
 
-			registered_materials.push_back({ hash, handle });
+			registered_materials.emplace(hash, handle);
 
 			if (!logged_material_bridge)
 			{
@@ -954,7 +963,7 @@ namespace rsx::remix
 			return;
 		}
 
-		if (m_impl->meshes_this_frame >= max_remix_meshes_per_frame ||
+		if (m_impl->meshes_this_frame >= cfg_max_meshes_per_frame() ||
 			m_impl->mesh_vertices_this_frame + mesh.vertices.size() > max_remix_mesh_vertices_per_frame ||
 			m_impl->mesh_indices_this_frame + mesh.indices.size() > max_remix_mesh_indices_per_frame)
 		{
@@ -1042,7 +1051,7 @@ namespace rsx::remix
 
 		if (!handle)
 		{
-			if (m_impl->registered_meshes.size() >= max_remix_registered_meshes)
+			if (m_impl->registered_meshes.size() >= cfg_max_registered_meshes())
 			{
 				if (!m_impl->logged_mesh_registry_full)
 				{
@@ -1062,7 +1071,9 @@ namespace rsx::remix
 				dst.position[0] = src.x;
 				dst.position[1] = src.y;
 				dst.position[2] = src.z;
-				dst.normal[2] = -1.0f;
+				dst.normal[0] = src.nx;
+				dst.normal[1] = src.ny;
+				dst.normal[2] = src.nz;
 				dst.texcoord[0] = src.u;
 				dst.texcoord[1] = src.v;
 				dst.color = src.color;
@@ -1093,7 +1104,7 @@ namespace rsx::remix
 			}
 
 			handle = created_handle;
-			m_impl->registered_meshes.push_back({ hash, handle });
+			m_impl->registered_meshes.emplace(hash, handle);
 		}
 
 		api::remixapi_InstanceInfo instance_info{};
@@ -1232,6 +1243,7 @@ namespace rsx::remix
 		m_impl->runtime.close();
 #endif
 		m_impl->reset_runtime();
+		reset_texture_cache();
 		rsx_log.notice("RTX Remix: runtime stopped.");
 	}
 }

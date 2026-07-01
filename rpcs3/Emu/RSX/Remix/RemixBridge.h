@@ -4,6 +4,7 @@
 #include "util/types.hpp"
 
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace rsx::remix
@@ -13,6 +14,11 @@ namespace rsx::remix
 		float x = 0.0f;
 		float y = 0.0f;
 		float z = 0.0f;
+		// Object-space normal decoded from RSX ATTR2. Defaults to facing the camera so meshes
+		// without a normal stream still shade sensibly under Remix's path tracer.
+		float nx = 0.0f;
+		float ny = 0.0f;
+		float nz = -1.0f;
 		float u = 0.0f;
 		float v = 0.0f;
 		u32 color = 0xffffffffu;
@@ -26,6 +32,9 @@ namespace rsx::remix
 		u64 material_hash = 0;
 		float albedo[3] = { 1.0f, 1.0f, 1.0f };
 		float opacity = 1.0f;
+		// Filesystem path (utf8) of the albedo texture captured from the bound RSX
+		// fragment texture. Empty when no usable texture was captured for this draw.
+		std::string albedo_texture_path;
 	};
 
 	class bridge final

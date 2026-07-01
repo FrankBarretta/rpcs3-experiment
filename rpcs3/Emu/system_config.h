@@ -206,6 +206,10 @@ struct cfg_root : cfg::node
 			cfg::_bool present_output{ this, "Present Output", true, true };
 			cfg::_bool debug_triangle{ this, "Debug Triangle", true, true };
 			cfg::_bool editor_mode{ this, "Editor Mode", false, true };
+			cfg::_bool capture_textures{ this, "Capture Textures", true, true };
+			cfg::uint<64, 262144> max_meshes_per_frame{ this, "Max Meshes Per Frame", 16384, true };
+			cfg::uint<256, 1048576> max_registered_meshes{ this, "Max Registered Meshes", 65536, true };
+			cfg::uint<256, 1048576> max_registered_materials{ this, "Max Registered Materials", 65536, true };
 
 		} rtx_remix{ this };
 

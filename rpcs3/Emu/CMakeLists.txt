@@ -499,6 +499,7 @@ target_sources(rpcs3_emu PRIVATE
     RSX/NV47/HW/nv406e.cpp
     RSX/NV47/HW/nv4097.cpp
     RSX/Remix/RemixBridge.cpp
+    RSX/Remix/RemixTexture.cpp
     RSX/Overlays/FriendsList/overlay_friends_list_dialog.cpp
     RSX/Overlays/HomeMenu/overlay_home_icons.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu.cpp

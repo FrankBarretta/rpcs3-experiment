@@ -6,6 +6,7 @@
 #include "VKAsyncScheduler.h"
 #include "VKGSRender.h"
 #include "Emu/RSX/Remix/RemixBridge.h"
+#include "Emu/RSX/Remix/RemixTexture.h"
 #include "vkutils/buffer_object.h"
 #include "vkutils/chip_class.h"
 #include <vulkan/vulkan_core.h>
@@ -132,9 +133,11 @@ namespace vk
 
 namespace
 {
-	constexpr u32 max_remix_capture_vertices = 65536;
-	constexpr u32 max_remix_capture_indices = 196608;
-	constexpr u32 max_remix_capture_bytes = 16 * 1024 * 1024;
+	// Per-draw capture ceilings. Raised well above the original values so that large
+	// single draws (big environment/character batches) are no longer skipped wholesale.
+	constexpr u32 max_remix_capture_vertices = 1048576;
+	constexpr u32 max_remix_capture_indices = 3145728;
+	constexpr u32 max_remix_capture_bytes = 96 * 1024 * 1024;
 
 	struct remix_vertex_stream
 	{
@@ -257,6 +260,29 @@ namespace
 		out.x = values[0];
 		out.y = values[1];
 		out.z = values[2];
+		return true;
+	}
+
+	// Decode and normalize the object-space normal (RSX ATTR2). On failure the caller keeps the
+	// mesh_vertex default (facing the camera), so a missing/degenerate normal never breaks capture.
+	bool decode_normal(const remix_vertex_stream& stream, u32 vertex_index, rsx::remix::mesh_vertex& out)
+	{
+		std::array<float, 4> values{};
+		if (!decode_vertex_values(stream, vertex_index, values))
+		{
+			return false;
+		}
+
+		const float length = std::sqrt(values[0] * values[0] + values[1] * values[1] + values[2] * values[2]);
+		if (!std::isfinite(length) || length < 1e-6f)
+		{
+			return false;
+		}
+
+		const float inv_length = 1.0f / length;
+		out.nx = values[0] * inv_length;
+		out.ny = values[1] * inv_length;
+		out.nz = values[2] * inv_length;
 		return true;
 	}
 
@@ -1327,6 +1353,7 @@ void VKGSRender::submit_remix_geometry(const vk::vertex_upload_info& vertex_info
 		volatile_data.empty() ? nullptr : volatile_data.data());
 
 	constexpr u8 position_attribute = 0;
+	constexpr u8 normal_attribute = 2;
 	constexpr u8 color_attribute = 3;
 	constexpr u8 texcoord0_attribute = 8;
 
@@ -1335,6 +1362,9 @@ void VKGSRender::submit_remix_geometry(const vk::vertex_upload_info& vertex_info
 	{
 		return;
 	}
+
+	remix_vertex_stream normal_stream{};
+	const bool has_normal_stream = resolve_vertex_stream(m_vertex_layout, normal_attribute, vertex_info, persistent_data, volatile_data, m_draw_processor, normal_stream);
 
 	remix_vertex_stream color_stream{};
 	const bool has_color_stream = resolve_vertex_stream(m_vertex_layout, color_attribute, vertex_info, persistent_data, volatile_data, m_draw_processor, color_stream);
@@ -1354,6 +1384,11 @@ void VKGSRender::submit_remix_geometry(const vk::vertex_upload_info& vertex_info
 		if (!decode_position(position_stream, vertex_index, mesh.vertices[i]))
 		{
 			return;
+		}
+
+		if (has_normal_stream)
+		{
+			decode_normal(normal_stream, vertex_index, mesh.vertices[i]);
 		}
 
 		if (has_texcoord_stream)
@@ -1501,6 +1536,29 @@ void VKGSRender::submit_remix_geometry(const vk::vertex_upload_info& vertex_info
 	mesh.material_hash = fnv1a_mix(mesh.material_hash, quantize_material_channel(mesh.albedo[1]));
 	mesh.material_hash = fnv1a_mix(mesh.material_hash, quantize_material_channel(mesh.albedo[2]));
 	mesh.material_hash = fnv1a_mix(mesh.material_hash, quantize_material_channel(mesh.opacity));
+
+	// Bind the RSX color texture to this draw. This gives every distinct PS3 texture a stable,
+	// unique Remix material (so each becomes its own replaceable surface) and, when the format is
+	// supported, an albedo image for the original look. Texture unit 0 is the diffuse map by
+	// convention, but some draws leave it unused and bind their base color to a later unit, so we
+	// fall back to the first enabled fragment texture. When none is bound the flat vertex-color
+	// material computed above is kept.
+	for (const auto& color_texture : rsx::method_registers.fragment_textures)
+	{
+		if (!color_texture.enabled())
+		{
+			continue;
+		}
+
+		const auto capture = rsx::remix::capture_fragment_texture(color_texture);
+		if (capture.valid)
+		{
+			mesh.material_hash = capture.hash;
+			mesh.albedo_texture_path = std::move(capture.albedo_path);
+		}
+
+		break;
+	}
 
 	m_remix_bridge->submit_mesh(mesh);
 }
